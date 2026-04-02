@@ -1,0 +1,45 @@
+# --- Rust & Cargo ---
+/target/
+**/*.rs.bk
+
+# --- JSOS Build Artifacts ---
+*.img
+*.bin
+*.iso
+
+# --- QuickJS-NG ---
+/quickjs-ng-src/
+**/*.o
+**/*.a
+
+# --- Logs, Error Dumps & Debug ---
+*.log
+*.txt
+patch_logs/
+patch_scripts/
+errors.json
+run_logs*/
+
+# --- Temporary & Scratch ---
+fix_*.py
+test_tl*.rs
+testsprite_tests/
+
+# --- AI Agent Configuration ---
+.agents/
+.claude/
+AGENTS.md
+CLAUDE.md
+
+# --- IDEs & OS ---
+.DS_Store
+.vscode/
+.idea/
+.env*
+*.sublime-project
+*.sublime-workspace
+.ionide/
+.direnv/
+.python-version
+__pycache__/
+ovmf.fd
