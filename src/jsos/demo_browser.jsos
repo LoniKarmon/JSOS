@@ -1,0 +1,98 @@
+// demo_browser.jsos – HTML/CSS browser demo for JSOS
+// Uses: dom.js, css.js, layout.js, paint.js
+
+const dom    = require('dom');
+const css    = require('css');
+const layout = require('layout');
+const paint  = require('paint');
+
+// ── Window ────────────────────────────────────────────────────────────────────
+const W = 680, H = 520;
+const state = {
+    winId: os.window.create(60, 30, W, H),
+    width: W,
+    height: H
+};
+
+// ── Page content ──────────────────────────────────────────────────────────────
+const PAGE_HTML = `<!DOCTYPE html>
+<html><head><style>
+body  { background-color: #0a0a1a; color: #c8dcff; padding: 8px; }
+h1    { color: #6496ff; margin: 8px; }
+h2    { color: #96c8ff; margin: 6px; }
+h3    { color: #64dcff; margin: 4px; }
+p     { margin: 4px; padding: 2px; }
+.card { background-color: #111828; padding: 8px; margin: 8px; }
+.hero { background-color: #0d1a30; padding: 10px; margin: 8px; }
+.tag  { color: #64ffaa; }
+.dim  { color: #607090; }
+</style></head>
+<body>
+  <div class="hero">
+    <h1>JSOS Browser Engine</h1>
+    <p class="tag">A pure-JavaScript HTML renderer running on bare metal.</p>
+  </div>
+  <div class="card">
+    <h2>How it works</h2>
+    <p>1. dom.js parses the HTML string into a DOM tree.</p>
+    <p>2. css.js applies styles via selector cascade.</p>
+    <p>3. layout.js computes x, y, width, height for every element.</p>
+    <p>4. paint.js calls os.window.drawRect and os.window.drawString.</p>
+  </div>
+  <div class="card">
+    <h2>Stack</h2>
+    <p class="tag">QuickJS  +  smolTCP  +  RTL8139  +  x86_64 Rust kernel</p>
+    <p class="dim">No Chromium. No Firefox. No libc. Just bare metal JavaScript.</p>
+  </div>
+  <div class="card">
+    <h3>Phase 4 complete.</h3>
+    <p>Try require('dom').parseHTML in the Node REPL to explore the engine.</p>
+  </div>
+</body></html>`;
+
+// ── Global cache ─────────────────────────────────────────────────────────────
+let cachedCmds = [];
+
+// ── Render pipeline (Pre-calculate everything except Paint) ──────────────────
+function updateLayout() {
+    // 1. Parse
+    const domRoot = dom.parseHTML(PAGE_HTML);
+
+    // 2. Style (embedded CSS from <style> tag)
+    const rules = css.parseCSS(domRoot._embeddedCSS || '');
+    css.applyStyles(domRoot, rules, {});
+
+    // 3. Layout (calculate absolute positions)
+    cachedCmds = layout.layoutDOM(domRoot, { x: 0, y: 0, w: state.width, h: state.height });
+}
+
+function render() {
+    // 4. Paint background
+    os.window.drawRect(state.winId, 0, 0, state.width, state.height, 10, 10, 26);
+    
+    // 5. Paint cached commands
+    paint.paint(cachedCmds, state.winId);
+
+    // 6. Flush
+    os.window.flush(state.winId);
+}
+
+// ── IPC ───────────────────────────────────────────────────────────────────────
+globalThis.on_ipc = function(msg) {
+    try {
+        const parsed = JSON.parse(msg);
+        if (parsed.type === 'RENDER') {
+            render();
+        }
+    } catch (e) {}
+};
+
+globalThis.on_key = function(charCode) {
+    if (charCode === 113 || charCode === 27) { // q or ESC
+        os.exit();
+    }
+};
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+updateLayout();
+render();

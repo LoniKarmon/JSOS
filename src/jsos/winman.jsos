@@ -1,0 +1,440 @@
+os.log("Booting JSOS Window Manager v2...");
+const shellPid = os.spawn("shell.jsos");
+os.log("Spawned shell daemon on PID " + shellPid);
+
+// ── Screen + State ─────────────────────────────────────────────────────────
+
+const screen = JSON.parse(os.screen());
+
+const state = {
+    width:          screen.width,
+    height:         screen.height,
+    mouseX:         Math.floor(screen.width / 2),
+    mouseY:         Math.floor(screen.height / 2),
+    mouseFlags:     0,
+    lastMouseFlags: 0,
+    dragWindowId:   null,
+    dragOffsetX:    0,
+    dragOffsetY:    0,
+    desktopWin:     os.window.create(0, 0, screen.width, screen.height),
+    zOrder:         [],
+    focusPid:       shellPid,   // in-memory focus, no os.store
+    hoverWinId:     null,
+};
+
+// ── Color palette ──────────────────────────────────────────────────────────
+
+const C = {
+    // Desktop gradient bands
+    bgTop:        [8,   12,  28 ],
+    bgBot:        [13,  18,  40 ],
+    // Taskbar
+    tbBg:         [7,   9,   16 ],
+    tbBorder:     [35,  60,  140],
+    tbTxt:        [140, 160, 220],
+    tbTxtDim:     [70,  85,  130],
+    // Branding
+    brand:        [80,  140, 255],
+    brandSub:     [50,  80,  160],
+    // App buttons (inactive / active)
+    btnBg:        [22,  30,  60 ],
+    btnBgHover:   [35,  50,  100],
+    btnBgActive:  [30,  55,  130],
+    btnTxt:       [200, 220, 255],
+    btnDot:       [80,  220, 120],  // running indicator dot
+    // System tray
+    memColor:     [80,  220, 180],
+    clockColor:   [160, 200, 255],
+    dateColor:    [100, 120, 170],
+};
+
+// ── App launcher buttons ───────────────────────────────────────────────────
+
+const LAUNCH_PALETTE = [
+    [40,  80,  190], [35,  150, 75 ], [180, 70,  45 ], [50,  110, 170],
+    [60,  75,  165], [140, 55,  165], [155, 115, 40 ], [35,  135, 140],
+    [120, 40,  100], [75,  135, 55 ],
+];
+
+const TB_H    = 40;   // taskbar height (kernel title bars are 22px, drawn after us)
+const BTN_W   = 76;
+const BTN_H   = 26;
+const BTN_GAP = 6;
+const BRAND_W = 110;
+
+function buildButtons() {
+    const bins = JSON.parse(os.listBin());
+    const exclude = ["winman.jsos", "seriallog.jsos", "webremote.jsos"];
+    const apps = bins.filter(b => exclude.indexOf(b) === -1);
+    const buttons = [];
+    let x = BRAND_W + 8;
+    for (let i = 0; i < apps.length; i++) {
+        const name = apps[i];
+        const label = name.replace(".jsos", "").replace("demo_", "");
+        const disp = label.charAt(0).toUpperCase() + label.slice(1);
+        buttons.push({
+            label: disp.length > 8 ? disp.substring(0, 8) : disp,
+            color: LAUNCH_PALETTE[i % LAUNCH_PALETTE.length],
+            x: x,
+            bin: name,
+        });
+        x += BTN_W + BTN_GAP;
+    }
+    return buttons;
+}
+
+const BUTTONS = buildButtons();
+
+// ── Focus ──────────────────────────────────────────────────────────────────
+
+function getFocusPid() { return state.focusPid; }
+
+function setFocusPid(pid) {
+    if (pid !== state.focusPid) {
+        state.focusPid = pid;
+        os.awaken(pid);
+    }
+}
+
+// ── Time / System info helpers ─────────────────────────────────────────────
+
+function clockString() {
+    try {
+        const t = JSON.parse(os.rtc());
+        const p = n => n < 10 ? "0" + n : "" + n;
+        return p(t.h) + ":" + p(t.m) + ":" + p(t.s);
+    } catch(e) {
+        const s = os.uptime();
+        const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+        const p = n => n < 10 ? "0" + n : "" + n;
+        return p(h) + ":" + p(m) + ":" + p(sec);
+    }
+}
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+function dateString() {
+    try {
+        const t = JSON.parse(os.rtc());
+        const mo = MONTHS[(t.month - 1) % 12] || "???";
+        const p = n => n < 10 ? "0" + n : "" + n;
+        return mo + " " + p(t.day);
+    } catch(e) { return "---"; }
+}
+
+function memString() {
+    try {
+        const si = JSON.parse(os.sysinfo());
+        const pct = Math.round(si.heap_used_mb * 100 / (si.heap_total_mb || 1));
+        return "MEM " + pct + "%";
+    } catch(e) { return "MEM --"; }
+}
+
+// Cache sysinfo (updates once per second via timer)
+let _cachedMem  = "MEM --";
+let _cachedDate = "---";
+let _sysTickCtr = 0;
+
+function refreshSysCache() {
+    _sysTickCtr++;
+    if (_sysTickCtr >= 4) {  // every ~1s (4 × 250ms)
+        _cachedMem  = memString();
+        _cachedDate = dateString();
+        _sysTickCtr = 0;
+    }
+}
+
+function runningBins() {
+    const set = {};
+    try {
+        const procs = JSON.parse(os.processes());
+        for (let i = 0; i < procs.length; i++) {
+            set[procs[i].name] = true;
+        }
+    } catch(e) {}
+    return set;
+}
+
+// ── Desktop gradient ───────────────────────────────────────────────────────
+
+function drawDesktopBg(win) {
+    const tbY = state.height - TB_H;
+    const bands = 48;
+    const bandH = Math.ceil(tbY / bands);
+    for (let i = 0; i < bands; i++) {
+        const t = i / (bands - 1);
+        const r = Math.round(C.bgTop[0] + (C.bgBot[0] - C.bgTop[0]) * t);
+        const g = Math.round(C.bgTop[1] + (C.bgBot[1] - C.bgTop[1]) * t);
+        const b = Math.round(C.bgTop[2] + (C.bgBot[2] - C.bgTop[2]) * t);
+        os.window.drawRect(win, 0, i * bandH, state.width, bandH + 1, r, g, b);
+    }
+    // Subtle horizontal accent line near bottom of desktop area
+    os.window.drawRect(win, 0, tbY - 1, state.width, 1, 25, 40, 90);
+}
+
+
+// ── Taskbar ────────────────────────────────────────────────────────────────
+
+function drawTaskbar(win) {
+    const tbY = state.height - TB_H;
+
+    // Background
+    os.window.drawRect(win, 0, tbY, state.width, TB_H, ...C.tbBg);
+    // Top accent border
+    os.window.drawRect(win, 0, tbY, state.width, 1, ...C.tbBorder);
+
+    // ── Branding (left) ──────────────────────────────────────────────────
+    // Logo circle
+    os.window.fillCircle(win, tbY + 20, tbY + 20, 13, ...C.brand);
+    os.window.fillCircle(win, tbY + 20, tbY + 20, 10, ...C.brandSub);
+    os.window.drawString(win, "JS", tbY + 13, tbY + 26, ...C.brand);
+    // "OS" text to right of circle
+    os.window.drawString(win, "OS", tbY + 37, tbY + 19, 180, 210, 255);
+    os.window.drawString(win, "2", tbY + 37, tbY + 31, 70, 100, 190);
+
+    // Separator after branding
+    os.window.drawRect(win, BRAND_W, tbY + 6, 1, TB_H - 12, 30, 45, 90);
+
+    // ── App launcher buttons (center-ish) ─────────────────────────────────
+    const running = runningBins();
+    for (let i = 0; i < BUTTONS.length; i++) {
+        const btn = BUTTONS[i];
+        const bx = btn.x;
+        const by = tbY + 7;
+        const isRunning = !!running[btn.bin];
+
+        // Button bg (slightly brighter if app is running)
+        const bgC = isRunning ? btn.color : C.btnBg;
+        os.window.drawRect(win, bx, by, BTN_W, BTN_H, ...bgC);
+
+        // Border (accent for running)
+        if (isRunning) {
+            os.window.drawRect(win, bx, by, BTN_W, 1, ...C.btnDot);
+            os.window.drawRect(win, bx, by + BTN_H - 1, BTN_W, 1, ...C.btnDot);
+            os.window.drawRect(win, bx, by, 1, BTN_H, ...C.btnDot);
+            os.window.drawRect(win, bx + BTN_W - 1, by, 1, BTN_H, ...C.btnDot);
+        } else {
+            os.window.drawRect(win, bx, by, BTN_W, 1, 30, 45, 90);
+            os.window.drawRect(win, bx, by + BTN_H - 1, BTN_W, 1, 20, 30, 60);
+        }
+
+        // Label
+        const labelX = bx + Math.floor((BTN_W - btn.label.length * 8) / 2);
+        os.window.drawString(win, btn.label, labelX, by + 18, ...C.btnTxt);
+
+        // Running dot below label
+        if (isRunning) {
+            const dotX = bx + Math.floor(BTN_W / 2) - 2;
+            os.window.drawRect(win, dotX, tbY + TB_H - 4, 5, 3, ...C.btnDot);
+        }
+    }
+
+    // ── System tray (right) ───────────────────────────────────────────────
+    const TRAY_W = 210;
+    const trayX = state.width - TRAY_W;
+
+    // Separator before tray
+    os.window.drawRect(win, trayX - 1, tbY + 6, 1, TB_H - 12, 30, 45, 90);
+
+    // Memory
+    os.window.drawString(win, _cachedMem, trayX + 4, tbY + 16, ...C.memColor);
+
+    // Clock
+    const clockTxt = clockString();
+    os.window.drawString(win, clockTxt, trayX + 4, tbY + 30, ...C.clockColor);
+
+    // Date (right-aligned)
+    const dateTxt = _cachedDate;
+    const dateX = state.width - dateTxt.length * 8 - 6;
+    os.window.drawString(win, dateTxt, dateX, tbY + 23, ...C.dateColor);
+
+    // Window count (between tray left and date)
+    try {
+        const windows = JSON.parse(os.window.list());
+        const appWins = windows.filter(w => w.owner_pid !== globalThis.__PID);
+        if (appWins.length > 0) {
+            const wTxt = appWins.length + " win" + (appWins.length !== 1 ? "s" : "");
+            os.window.drawString(win, wTxt, trayX + 80, tbY + 23, ...C.tbTxtDim);
+        }
+    } catch(e) {}
+}
+
+// ── Compositor ─────────────────────────────────────────────────────────────
+
+function renderDesktop() {
+    os.clear();
+
+    const dw = state.desktopWin;
+    drawDesktopBg(dw);
+    drawTaskbar(dw);
+    os.window.flush(dw);
+}
+
+function render() {
+    refreshSysCache();
+    renderDesktop();
+    const windows = JSON.parse(os.window.list());
+    const pids = new Set([shellPid]);
+    for (let i = 0; i < windows.length; i++) {
+        const w = windows[i];
+        if (w.owner_pid !== globalThis.__PID) pids.add(w.owner_pid);
+    }
+    pids.forEach(function(pid) {
+        os.sendIpc(pid, JSON.stringify({ type: "RENDER" }));
+    });
+}
+
+// ── Z-order management ─────────────────────────────────────────────────────
+
+let zCounter = 100;
+
+function bringToFront(winId) {
+    const idx = state.zOrder.indexOf(winId);
+    if (idx !== -1) state.zOrder.splice(idx, 1);
+    state.zOrder.push(winId);
+    os.window.setZIndex(winId, ++zCounter);
+}
+
+function syncZOrder(windows) {
+    const liveIds = new Set(windows.map(function(w) { return w.id; }));
+    state.zOrder = state.zOrder.filter(function(id) { return liveIds.has(id); });
+    for (let i = 0; i < windows.length; i++) {
+        const w = windows[i];
+        if (w.owner_pid !== globalThis.__PID && state.zOrder.indexOf(w.id) === -1) {
+            state.zOrder.push(w.id);
+        }
+    }
+}
+
+const KERN_TITLE_H = 22; // must match draw_all_decorations in js_runtime.rs
+
+function hitTest(winById, x, y) {
+    for (let i = state.zOrder.length - 1; i >= 0; i--) {
+        const w = winById[state.zOrder[i]];
+        if (!w) continue;
+        if (x >= w.x && x < w.x + w.width &&
+            y >= w.y - KERN_TITLE_H && y < w.y + w.height) {
+            return w;
+        }
+    }
+    return null;
+}
+
+// ── Keyboard ───────────────────────────────────────────────────────────────
+
+globalThis.on_key = function(charCode) {
+    os.sendIpc(getFocusPid(), JSON.stringify({ type: "KEY", charCode }));
+    render();
+};
+
+// ── Mouse ──────────────────────────────────────────────────────────────────
+
+globalThis.on_mouse = function(x, y, flags) {
+    const prevX       = state.mouseX;
+    const prevY       = state.mouseY;
+    const leftDown    = (flags & 1);
+    const leftWasDown = (state.lastMouseFlags & 1);
+
+    state.mouseX     = x;
+    state.mouseY     = y;
+    state.mouseFlags = flags;
+
+    os.window.setCursor(x, y);
+
+    const scroll = os.mouse.scroll();
+    if (scroll !== 0) {
+        os.sendIpc(getFocusPid(), JSON.stringify({ type: "SCROLL", delta: scroll }));
+    }
+
+    const windows = JSON.parse(os.window.list());
+    syncZOrder(windows);
+
+    const winById = {};
+    for (let i = 0; i < windows.length; i++) winById[windows[i].id] = windows[i];
+
+    // ── Click ──────────────────────────────────────────────────────────────
+    if (leftDown && !leftWasDown) {
+        const hit = hitTest(winById, x, y);
+        if (hit) {
+            setFocusPid(hit.owner_pid);
+            bringToFront(hit.id);
+            const relY = y - hit.y;
+            if (relY < 0) {
+                // Title bar area — close dot is at hit.x + 12, radius 5
+                const isCloseBtn = x >= hit.x + 7 && x <= hit.x + 17 &&
+                                   y >= hit.y - KERN_TITLE_H + 2 && y <= hit.y - 2;
+                if (isCloseBtn) {
+                    os.exit(hit.owner_pid);
+                } else {
+                    state.dragWindowId = hit.id;
+                    state.dragOffsetX  = x - hit.x;
+                    state.dragOffsetY  = y - hit.y;
+                }
+            } else {
+                os.sendIpc(hit.owner_pid, JSON.stringify({
+                    type: "MOUSE", x: x - hit.x, y: relY
+                }));
+            }
+        }
+
+        // Taskbar app launcher clicks
+        const tbY = state.height - TB_H;
+        if (y >= tbY) {
+            for (let i = 0; i < BUTTONS.length; i++) {
+                const btn = BUTTONS[i];
+                if (x >= btn.x && x < btn.x + BTN_W) {
+                    os.spawn(btn.bin);
+                    break;
+                }
+            }
+        }
+
+        state.lastMouseFlags = flags;
+        render();
+        return;
+    }
+
+    // ── Release ────────────────────────────────────────────────────────────
+    if (!leftDown && leftWasDown) {
+        state.dragWindowId = null;
+        state.lastMouseFlags = flags;
+        render();
+        return;
+    }
+
+    state.lastMouseFlags = flags;
+
+    // ── Drag ───────────────────────────────────────────────────────────────
+    if (leftDown && state.dragWindowId !== null) {
+        const newX = Math.max(0, x - state.dragOffsetX);
+        const newY = Math.max(KERN_TITLE_H + 2, y - state.dragOffsetY);
+        os.window.move(state.dragWindowId, newX, newY);
+        render();
+        return;
+    }
+
+    // ── Hover ──────────────────────────────────────────────────────────────
+    if (x !== prevX || y !== prevY) {
+        const hit = hitTest(winById, x, y);
+        if (hit) setFocusPid(hit.owner_pid);
+    }
+};
+
+// ── IPC ────────────────────────────────────────────────────────────────────
+
+globalThis.on_ipc = function(msg) {};
+
+// ── Periodic timer ─────────────────────────────────────────────────────────
+
+globalThis.__fireTimer = function(id) {
+    if (id === "1") {
+        render();
+        os._setTimeout(globalThis.__PID.toString(), "1", "250");
+    }
+};
+os._setTimeout(globalThis.__PID.toString(), "1", "250");
+
+// ── Initial render ─────────────────────────────────────────────────────────
+
+// Render immediately with placeholder sysinfo (timer will fill real values after 250ms)
+render();

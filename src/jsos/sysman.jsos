@@ -1,0 +1,232 @@
+// sysman.jsos — JSOS Unified System Monitor
+// Displays CPU, memory, RTC, and manages running processes.
+
+const WIN_W = 720;
+const WIN_H = 400;
+const winId = os.window.create(50, 40, WIN_W, WIN_H);
+
+// ── Colors ──────────────────────────────────────────────────────────────────
+const BG       = [ 18,  18,  22];
+const HEADER   = [ 28,  28,  34];
+const ACCENT   = [ 70, 140, 220]; 
+const BRIGHT   = [240, 240, 245];
+const DIM      = [140, 140, 150];
+const SELECTED = [ 45,  55,  80];
+const SEL_TEXT = [255, 255, 255];
+const ROW_TEXT = [190, 190, 200];
+const ROW_ALT  = [ 22,  22,  26];
+const KILL_COL = [220,  70,  70];
+const DIVIDER  = [ 45,  45,  55];
+const WARN     = [230, 190,  60];
+const BAR_BG   = [ 28,  28,  34];
+
+// ── Layout ──────────────────────────────────────────────────────────────────
+const LEFT_W     = 300;
+const RIGHT_X    = 320;
+const RIGHT_W    = WIN_W - RIGHT_X;
+const HDR_H      = 30;
+const FOOTER_H   = 30;
+const LIST_Y     = HDR_H + 20;
+const ROW_H      = 20;
+
+const MAX_VISIBLE = Math.floor((WIN_H - LIST_Y - FOOTER_H) / ROW_H);
+
+// ── State ────────────────────────────────────────────────────────────────────
+let info;
+let procs = [];
+let selected = 0;
+let scrollOff = 0;
+
+function pad(n) { return n < 10 ? "0" + n : "" + n; }
+
+function loadData() {
+    try { info = JSON.parse(os.sysinfo()); } catch(e) { info = {}; }
+    try { procs = JSON.parse(os.processes()); } catch(e) { procs = []; }
+    procs.sort(function(a, b) { return a.pid - b.pid; });
+    
+    if (selected >= procs.length) selected = Math.max(0, procs.length - 1);
+    if (selected < scrollOff) scrollOff = selected;
+    if (selected >= scrollOff + MAX_VISIBLE) scrollOff = selected - MAX_VISIBLE + 1;
+}
+
+function drawLabel(label, value, x, y) {
+    os.window.drawString(winId, label, x, y, ...DIM);
+    os.window.drawString(winId, String(value), x + label.length * 8 + 4, y, ...BRIGHT);
+}
+
+function drawSection(title, x, y, w) {
+    os.window.drawRect(winId, x, y - 12, w, 1, ...DIVIDER);
+    os.window.drawString(winId, title, x + 4, y, ...ACCENT);
+    return y + 6;
+}
+
+function renderLeft(y) {
+    y = drawSection("PROCESSOR", 15, y, LEFT_W - 15);
+    y += 18;
+    drawLabel("Vendor:  ", info.vendor || "N/A", 20, y); y += 20;
+    
+    // Model might be long
+    const brand = info.brand || "N/A";
+    os.window.drawString(winId, "Model:", 20, y, ...DIM);
+    // Split brand if too long
+    let brandY = y;
+    for (let i = 0; i < brand.length; i += 28) {
+        os.window.drawString(winId, brand.substr(i, 28), 90, brandY, ...BRIGHT);
+        brandY += 16;
+    }
+    y = brandY + 6;
+    
+    const freqStr = (info.base_mhz > 0) ? info.base_mhz + " MHz (Max: " + info.max_mhz + ")" : "N/A";
+    drawLabel("Speed:   ", freqStr, 20, y); y += 22;
+
+    y = drawSection("MEMORY", 15, y + 8, LEFT_W - 15);
+    y += 18;
+    drawLabel("Physical RAM:  ", (info.total_ram_mb || 0) + " MiB", 20, y); y += 22;
+
+    const used = info.heap_used_mb || 0;
+    const total = info.heap_total_mb || 0;
+    const pct = total > 0 ? Math.floor((used / total) * 100) : 0;
+    drawLabel("Kernel Heap:   ", used + " / " + total + " MiB (" + pct + "%)", 20, y); y += 18;
+    
+    const barW = LEFT_W - 30;
+    os.window.drawRect(winId, 20, y, barW, 10, ...BAR_BG);
+    if (total > 0 && used > 0) {
+        const fill = Math.floor(barW * Math.min(1, used / total));
+        os.window.drawRect(winId, 20, y, fill, 10, ...ACCENT);
+    }
+    y += 24;
+
+    y = drawSection("RTC CLOCK", 15, y + 8, LEFT_W - 15);
+    y += 18;
+    
+    let rtc = {h:0, m:0, s:0, day:1, month:1, year:2000};
+    try { rtc = JSON.parse(os.rtc()); } catch(e) {}
+    const timeStr = pad(rtc.h) + ":" + pad(rtc.m) + ":" + pad(rtc.s);
+    const dateStr = pad(rtc.day) + "/" + pad(rtc.month) + "/" + rtc.year;
+    
+    os.window.drawString(winId, timeStr, 40, y + 10, ...BRIGHT);
+    os.window.drawString(winId, dateStr, 120, y + 10, ...DIM);
+}
+
+function renderRight() {
+    // Right section headers
+    os.window.drawString(winId, "PID",  RIGHT_X + 15, HDR_H + 14, ...DIM);
+    os.window.drawString(winId, "NAME", RIGHT_X + 70, HDR_H + 14, ...DIM);
+    os.window.drawRect(winId, RIGHT_X, HDR_H + 19, RIGHT_W, 1, ...DIVIDER);
+
+    const visible = Math.min(procs.length - scrollOff, MAX_VISIBLE);
+    for (let i = 0; i < visible; i++) {
+        const idx = scrollOff + i;
+        const p   = procs[idx];
+        const y   = LIST_Y + i * ROW_H;
+        const sel = (idx === selected);
+        const self_ = (p.pid === globalThis.__PID);
+
+        if (sel) {
+            os.window.drawRect(winId, RIGHT_X, y, RIGHT_W, ROW_H, ...SELECTED);
+            os.window.drawRect(winId, RIGHT_X, y, 3, ROW_H, ...ACCENT);
+        } else if (i % 2 === 1) {
+            os.window.drawRect(winId, RIGHT_X, y, RIGHT_W, ROW_H, ...ROW_ALT);
+        }
+
+        const tc = sel ? SEL_TEXT : (self_ ? WARN : ROW_TEXT);
+        os.window.drawString(winId, String(p.pid),  RIGHT_X + 15, y + 14, ...tc);
+        os.window.drawString(winId, p.name,         RIGHT_X + 70, y + 14, ...tc);
+        
+        if (self_) {
+            os.window.drawString(winId, "(sysman)", WIN_W - 85, y + 14, ...WARN);
+        }
+    }
+
+    // Scrollbar
+    const sbW = 6;
+    if (procs.length > MAX_VISIBLE) {
+        const sbH  = WIN_H - LIST_Y - FOOTER_H;
+        const barH = Math.max(10, Math.floor(sbH * MAX_VISIBLE / procs.length));
+        const barY = LIST_Y + Math.floor(sbH * scrollOff / procs.length);
+        
+        os.window.drawRect(winId, WIN_W - sbW, LIST_Y, sbW, sbH, ...HEADER);
+        os.window.drawRect(winId, WIN_W - sbW, barY, sbW, barH, ...ACCENT);
+    }
+}
+
+function render() {
+    loadData();
+
+    // Solid Background
+    os.window.drawRect(winId, 0, 0, WIN_W, WIN_H, ...BG);
+
+    // Top Header
+    os.window.drawRect(winId, 0, 0, WIN_W, HDR_H, ...HEADER);
+    os.window.drawString(winId, "System Monitor", 15, 20, ...BRIGHT);
+
+    const countStr = procs.length + " Processes";
+    os.window.drawString(winId, countStr, WIN_W - countStr.length * 8 - 15, 20, ...DIM);
+    os.window.drawRect(winId, 0, HDR_H, WIN_W, 1, ...DIVIDER);
+
+    // Vertical Divider
+    os.window.drawRect(winId, RIGHT_X - 10, HDR_H + 1, 1, WIN_H - HDR_H - FOOTER_H, ...DIVIDER);
+
+    renderLeft(HDR_H + 30);
+    renderRight();
+
+    // Footer
+    const footerY = WIN_H - FOOTER_H;
+    os.window.drawRect(winId, 0, footerY, WIN_W, FOOTER_H, ...HEADER);
+    os.window.drawRect(winId, 0, footerY, WIN_W, 1, ...DIVIDER);
+    
+    const fTextY = WIN_H - 10;
+    const upSecs = os.uptime();
+    const upMin = Math.floor(upSecs / 60);
+    os.window.drawString(winId, "Uptime: " + upMin + "m " + pad(upSecs % 60) + "s", 15, fTextY, ...DIM);
+    
+    os.window.drawString(winId, "[UP/DWN] Navigate", RIGHT_X, fTextY, ...DIM);
+    os.window.drawString(winId, "[K] Kill", RIGHT_X + 160, fTextY, ...KILL_COL);
+    os.window.drawString(winId, "[Q] Quit", WIN_W - 75, fTextY, ...DIM);
+
+    os.window.flush(winId);
+}
+
+// ── Input ────────────────────────────────────────────────────────────────────
+
+globalThis.on_key = function(charCode) {
+    if (charCode === 113 || charCode === 81 || charCode === 27) {
+        os.exit();
+    } else if (charCode === 16) {
+        if (selected > 0) {
+            selected--;
+            if (selected < scrollOff) scrollOff = selected;
+        }
+        render();
+    } else if (charCode === 14) {
+        if (selected < procs.length - 1) {
+            selected++;
+            if (selected >= scrollOff + MAX_VISIBLE) scrollOff = selected - MAX_VISIBLE + 1;
+        }
+        render();
+    } else if (charCode === 107 || charCode === 75) {
+        if (procs.length > 0 && selected < procs.length) {
+            const target = procs[selected];
+            if (target.pid !== globalThis.__PID) {
+                os.exit(target.pid);
+                render(); 
+            }
+        }
+    }
+};
+
+globalThis.on_ipc = function(msg) {
+    try {
+        const p = JSON.parse(msg);
+        if (p.type === "KEY")    { globalThis.on_key(p.charCode); return; }
+        if (p.type === "RENDER") { render(); return; }
+    } catch (e) {}
+};
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+
+setInterval(function() {
+    render();
+}, 1000);
+
+render();

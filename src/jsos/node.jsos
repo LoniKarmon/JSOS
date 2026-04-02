@@ -1,0 +1,112 @@
+// src/js/node.js
+// Native JavaScript Evaluation Environment
+
+// Transform let/const → var so bindings survive across REPL eval() calls.
+// QuickJS scopes `let`/`const` to a single JS_Eval invocation; `var` leaks
+// to globalThis and persists for the lifetime of the JS context.
+// IMPORTANT: use indirect eval (0, eval)() not direct eval() — direct eval
+// inside a function is function-scoped, so var would still die with the call.
+// Indirect eval always runs in global scope.
+function replEval(src) {
+    const transformed = src
+        .replace(/\blet\s+/g, 'var ')
+        .replace(/\bconst\s+/g, 'var ');
+    return (0, eval)(transformed);
+}
+
+globalThis.on_input = function (cmdStr) {
+    if (cmdStr.trim() === "exit" || cmdStr.trim() === ".exit") {
+        os.store.set("focus_pid", "");
+        os.exit();
+        return;
+    }
+
+    try {
+        const result = replEval(cmdStr);
+        if (result !== undefined) {
+            console.log("=> " + result);
+        }
+    } catch (e) {
+        console.log("Uncaught Exception: " + e.message);
+    }
+};
+const state = {
+    winId: os.window.create(100, 50, 600, 450),
+    width: 600,
+    height: 450
+};
+
+let buffer = "";
+let history = ["Welcome to the Native Node REPL!"];
+let dirty = true;
+
+function render() {
+    if (!dirty) return;
+    
+    // Draw Terminal Background (Dark Blue-Grey)
+    os.window.drawRect(state.winId, 0, 0, state.width, state.height, 30, 40, 50);
+    
+    // Draw Shell History
+    let drawY = 30;
+    for (let i = Math.max(0, history.length - 20); i < history.length; i++) {
+        os.window.drawString(state.winId, history[i], 20, drawY, 200, 200, 200);
+        drawY += 20;
+    }
+    
+    // Draw Current Input — show only the tail that fits in the window
+    const maxInputChars = Math.floor((state.width - 24) / 8) - 6; // 8px/char, subtract "node> "
+    const displayBuf = buffer.length > maxInputChars ? buffer.slice(-maxInputChars) : buffer;
+    const cursor = os.uptime() % 2 === 0 ? "_" : "";
+    os.window.drawString(state.winId, "node> " + displayBuf + cursor, 20, drawY, 0, 255, 0);
+    
+    os.window.flush(state.winId);
+    dirty = false;
+}
+
+// Handle IPC from winman (RENDER and KEY events)
+globalThis.on_ipc = function (msg) {
+    try {
+        const parsed = JSON.parse(msg);
+        if (parsed.type === "RENDER") {
+            dirty = true;
+            render();
+        } else if (parsed.type === "KEY") {
+            globalThis.on_key(parsed.charCode);
+        }
+    } catch (e) {}
+};
+
+// Rendering is now driven entirely by winman RENDER IPC messages
+
+const _sysLog = console.log;
+console.log = function(msg) {
+    _sysLog(msg);
+    history.push(String(msg));
+    dirty = true;
+    render();
+};
+
+globalThis.on_key = function (charCode) {
+    if (charCode === 10 || charCode === 13) { // Enter
+        history.push("node> " + buffer);
+        globalThis.on_input(buffer);
+        buffer = "";
+    } else if (charCode === 8) { // Backspace
+        buffer = buffer.slice(0, -1);
+    } else if (charCode >= 32 && charCode <= 126) {
+        buffer += String.fromCharCode(charCode);
+    }
+    dirty = true;
+    render();
+};
+
+function reset() {
+    buffer = "";
+    dirty = true;
+}
+
+// Initial Render
+reset();
+render();
+os.store.set("focus_pid", String(globalThis.__PID));
+

@@ -1,0 +1,38 @@
+// pixeldemo.jsos — Pixel Buffer API demo
+// Renders a static RGB gradient using direct pixel writes.
+
+const W = 320, H = 240;
+const win = os.window.create(120, 80, W, H);
+const buf = new Uint32Array(os.window.getPixelBuffer(win));
+
+let bufFilled = false;
+
+function render() {
+    // Fill the pixel buffer once — O(W*H) JS loop only runs on first render
+    if (!bufFilled) {
+        for (let y = 0; y < H; y++) {
+            const g = (y * 255 / H) & 0xFF;
+            for (let x = 0; x < W; x++) {
+                const r = (x * 255 / W) & 0xFF;
+                buf[y * W + x] = (r << 16) | (g << 8) | 128;
+            }
+        }
+        bufFilled = true;
+    }
+    // Always flush — winman clears the screen every frame so we must re-blit
+    os.window.flush(win);
+}
+
+globalThis.on_key = function(charCode) {
+    if (charCode === 113 || charCode === 81 || charCode === 27) os.exit();
+};
+
+globalThis.on_ipc = function(msg) {
+    try {
+        const m = JSON.parse(msg);
+        if (m.type === "RENDER") render();
+        else if (m.type === "KEY") globalThis.on_key(m.charCode);
+    } catch(e) {}
+};
+
+render();

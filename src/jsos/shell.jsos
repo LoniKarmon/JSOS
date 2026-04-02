@@ -1,0 +1,583 @@
+// src/jsos/shell.jsos — JSOS Interactive Shell
+
+const _sysLog = console.log;
+let _promptSuspended = false;
+
+// ── Layout ─────────────────────────────────────────────────────────────────
+const WIN_W   = 700;
+const WIN_H   = 400;
+const PAD_TOP = 10;
+const PAD_L   = 10;
+const LINE_H  = 20;
+const CHAR_W  = 8;
+const VISIBLE = Math.floor((WIN_H - PAD_TOP - LINE_H - 10) / LINE_H); // 18 lines
+
+// ── Colors ─────────────────────────────────────────────────────────────────
+const BG     = [10,  10,  15 ];
+const TEXT   = [200, 220, 255];
+const PROMPT = [255, 255, 255];
+const DIM    = [100, 110, 140];
+const SB_BG  = [30,  30,  45 ];
+const SB_FG  = [80,  100, 180];
+
+// ── State ──────────────────────────────────────────────────────────────────
+const state = {
+    winId:        os.window.create(50, 50, WIN_W, WIN_H),
+    // Shell State
+    buffer:       "",
+    cursor:       0,
+    lines:        [],
+    scrollOffset: 0,
+    history:      [],
+    historyIdx:   -1,
+    savedDraft:   "",
+
+    // Editor State
+    editorMode:   false,
+    editorFile:   null,
+    editorLines:  [""],
+    editorCx:     0,
+    editorCy:     0,
+    editorScrollY: 0,
+    editorMsg:    "",
+    editorMod:    false,
+};
+
+// ── History persistence ────────────────────────────────────────────────────
+function loadHistory() { try { const raw = os.store.get("shell_history"); if (raw) { const parsed = JSON.parse(raw); if (Array.isArray(parsed)) return parsed; } } catch(e) {} return []; }
+function saveHistory() { try { os.store.set("shell_history", JSON.stringify(state.history.slice(-100))); } catch(e) {} }
+state.history = loadHistory();
+
+// ── Scroll & Word helpers ──────────────────────────────────────────────────
+function maxScroll()      { return Math.max(0, state.lines.length - VISIBLE); }
+function scrollUp(n)      { state.scrollOffset = Math.min(state.scrollOffset + n, maxScroll()); }
+function scrollDown(n)    { state.scrollOffset = Math.max(0, state.scrollOffset - n); }
+function scrollToBottom() { state.scrollOffset = 0; }
+
+function wordLeft() {
+    let i = state.cursor;
+    while (i > 0 && state.buffer[i - 1] === ' ') i--;
+    while (i > 0 && state.buffer[i - 1] !== ' ') i--;
+    state.cursor = i;
+}
+function wordRight() {
+    let i = state.cursor;
+    while (i < state.buffer.length && state.buffer[i] === ' ') i++;
+    while (i < state.buffer.length && state.buffer[i] !== ' ') i++;
+    state.cursor = i;
+}
+
+// ── Shared Output ──────────────────────────────────────────────────────────
+function pushLine(text) {
+    const maxLen = 84;
+    const str = String(text);
+    if (str.length === 0) { state.lines.push(""); return; }
+    for (let i = 0; i < str.length; i += maxLen) {
+        state.lines.push(str.substring(i, i + maxLen));
+    }
+    if (state.lines.length > 500) {
+        state.lines.splice(0, state.lines.length - 500);
+        scrollToBottom();
+    }
+}
+console.log = function(msg) {
+    _sysLog(msg);
+    for (const part of String(msg).split("\n")) pushLine(part);
+    scrollToBottom();
+    render();
+};
+
+// ── Editor Renderer ────────────────────────────────────────────────────────
+function adjustEditorScroll() {
+    const visibleLines = Math.floor((WIN_H - LINE_H * 2) / LINE_H);
+    if (state.editorCy < state.editorScrollY) state.editorScrollY = state.editorCy;
+    if (state.editorCy >= state.editorScrollY + visibleLines) state.editorScrollY = state.editorCy - visibleLines + 1;
+}
+
+function renderEditor() {
+    const w = WIN_W, h = WIN_H, lh = LINE_H, cw = CHAR_W;
+    os.window.drawRect(state.winId, 0, 0, w, h, 15, 15, 20);
+    os.window.drawRect(state.winId, 0, 0, w, lh, 40, 50, 70);
+    const title = state.editorFile ? `JSOS Editor - ${state.editorFile}${state.editorMod ? " *" : ""}` : "JSOS Editor";
+    os.window.drawString(state.winId, title + "  [Ctrl+S: Save]  [Ctrl+Q / Esc: Quit]", 10, lh - 4, 255, 255, 255);
+
+    const visibleLines = Math.floor((h - lh * 2) / lh);
+    for (let i = 0; i < visibleLines; i++) {
+        const lineIdx = state.editorScrollY + i;
+        if (lineIdx >= state.editorLines.length) break;
+        os.window.drawString(state.winId, state.editorLines[lineIdx], 5, lh + (i + 1) * lh - 4, 220, 220, 220);
+    }
+
+    if (state.editorCy >= state.editorScrollY && state.editorCy < state.editorScrollY + visibleLines) {
+        const blink = Math.floor(os.uptime() * 2) % 2 === 0;
+        if (blink) {
+            const visualY = lh + (state.editorCy - state.editorScrollY) * lh;
+            os.window.drawRect(state.winId, 5 + state.editorCx * cw, visualY + 2, cw, lh - 4, 150, 150, 200);
+            const charAt = state.editorLines[state.editorCy][state.editorCx] || " ";
+            os.window.drawString(state.winId, charAt, 5 + state.editorCx * cw, visualY + lh - 4, 10, 10, 20);
+        }
+    }
+
+    os.window.drawRect(state.winId, 0, h - lh, w, lh, 40, 50, 70);
+    os.window.drawString(state.winId, state.editorMsg, 10, h - 4, 200, 255, 200);
+    const posStr = `Ln ${state.editorCy + 1}, Col ${state.editorCx + 1}`;
+    os.window.drawString(state.winId, posStr, w - posStr.length * cw - 10, h - 4, 255, 255, 255);
+    os.window.flush(state.winId);
+}
+
+// ── Shell Renderer ─────────────────────────────────────────────────────────
+function renderShell() {
+    const sbW = 6;
+    os.window.drawRect(state.winId, 0, 0, WIN_W, WIN_H, ...BG);
+    const total    = state.lines.length;
+    const startIdx = Math.max(0, total - VISIBLE - state.scrollOffset);
+    const endIdx   = Math.max(0, total - state.scrollOffset);
+    let y = PAD_TOP;
+    for (const line of state.lines.slice(startIdx, endIdx)) {
+        os.window.drawString(state.winId, line, PAD_L, y + LINE_H - 4, ...TEXT);
+        y += LINE_H;
+    }
+    if (!_promptSuspended) {
+        const promptY = PAD_TOP + VISIBLE * LINE_H;
+        os.window.drawRect(state.winId, 0, promptY - 2, WIN_W - sbW - 2, 1, ...DIM);
+        const prefix        = "jsos> ";
+        const maxInputChars = Math.floor((WIN_W - PAD_L - 4) / CHAR_W) - prefix.length - 1;
+        const viewStart     = Math.max(0, state.cursor - maxInputChars + 1);
+        const visBuf        = state.buffer.slice(viewStart, viewStart + maxInputChars + 1);
+        const dispCursor    = state.cursor - viewStart;
+        const beforeCur     = visBuf.slice(0, dispCursor);
+        const atCur         = visBuf[dispCursor] || " ";
+        const afterCur      = visBuf.slice(dispCursor + 1);
+        os.window.drawString(state.winId, prefix + beforeCur, PAD_L, promptY + LINE_H - 4, ...PROMPT);
+        const cursorX = PAD_L + (prefix.length + beforeCur.length) * CHAR_W;
+        const blink   = Math.floor(os.uptime()) % 2 === 0;
+        os.window.drawRect(state.winId, cursorX, promptY + 2, CHAR_W, LINE_H - 4,
+            blink ? 160 : 60, blink ? 180 : 80, blink ? 255 : 120);
+        os.window.drawString(state.winId, atCur, cursorX, promptY + LINE_H - 4,
+            blink ? 10 : 200, blink ? 10 : 220, blink ? 15 : 255);
+        if (afterCur.length > 0) {
+            os.window.drawString(state.winId, afterCur, cursorX + CHAR_W, promptY + LINE_H - 4, ...PROMPT);
+        }
+    }
+    if (total > VISIBLE) {
+        const sbX = WIN_W - sbW - 1;
+        const sbH = WIN_H - 4;
+        os.window.drawRect(state.winId, sbX, 2, sbW, sbH, ...SB_BG);
+        const thumbH = Math.max(20, Math.floor(sbH * VISIBLE / total));
+        const scroll = maxScroll();
+        const thumbPos = scroll > 0 ? Math.floor((sbH - thumbH) * (scroll - state.scrollOffset) / scroll) : 0;
+        os.window.drawRect(state.winId, sbX, 2 + thumbPos, sbW, thumbH, ...SB_FG);
+        if (state.scrollOffset > 0) os.window.drawString(state.winId, "^", WIN_W - sbW - 10, PAD_TOP + 10, ...DIM);
+    }
+    os.window.flush(state.winId);
+}
+
+function render() {
+    if (state.editorMode) renderEditor();
+    else renderShell();
+}
+
+setInterval(() => { if (state.editorMode) renderEditor(); }, 500);
+
+// ── Commands ───────────────────────────────────────────────────────────────
+const COMMANDS = {
+    time: { desc: "Show system time and uptime",
+        fn: () => {
+            console.log("Uptime: " + os.uptime() + "s")
+            console.log("Time: " + os.time())
+        }
+    },
+    clear: { desc: "Clear terminal",
+        fn: () => { state.lines = []; state.buffer = ""; state.cursor = 0; scrollToBottom(); render(); } },
+    reboot: { desc: "Reboot system",
+        fn: () => os.reboot() },
+    shutdown: { desc: "Shutdown system",
+        fn: () => os.shutdown() },
+    about: { desc: "Show OS info",
+        fn: () => console.log("JSOS v0.2.1 — A JavaScript-Oriented bare-metal OS") },
+    debug: {
+        desc: "Debug utilities",
+        fn: (a) => {
+            if (a[1] === "storage") {
+                const k = a[2];
+                if (!k) return console.log("Usage: debug storage <key>");
+                // Since we don't have a direct LBA-getter in JS, we verify if it exists
+                const val = os.store.get(k);
+                console.log(`Key: ${k}  Exists: ${!!val}  Size: ${val ? val.length : 0} bytes`);
+                console.log("MFT starts at LBA 1026. Search for your key string in hex editor there.");
+            }
+        }
+    },
+    echo: { desc: "Print text",
+        fn: (a) => console.log(a.slice(1).join(" ")) },
+    notify: { desc: "Send a toast notification",
+        fn: (a) => os.notify(a.slice(1).join(" ") || "Test notification") },
+    log: { desc: "Print text",
+        fn: (a) => console.log(a.slice(1).join(" ")) },
+    ip: {
+        desc: "Show network configuration - addr, link, route",
+        fn: (a) => {
+            const cfg = os.net.config();
+            if (!a[1] || a[1] === "addr") console.log(cfg);
+            else if (a[1] === "link") console.log("Interface: eth0  Status: UP");
+            else if (a[1] === "route") console.log("default via 10.0.2.2 dev eth0");
+        }
+    },
+    ports: {
+        desc: "Show network ports",
+        fn: () => {
+            const ports = os.net.ports();
+            console.log("Port  PID  NAME");
+            for (const p of ports) console.log(String(p.port).padEnd(6) + String(p.pid).padEnd(6) + p.name);
+        }
+    },
+    processes: {
+        desc: "List running processes",
+        fn: () => {
+            try {
+                const ps = JSON.parse(os.processes());
+                console.log("PID   NAME");
+                for (const p of ps) console.log(String(p.pid).padEnd(6) + p.name);
+            } catch(e) { console.log("Error: " + e); }
+        }
+    },
+    remote: {
+        desc: "Start Web Dashboard",
+        fn: () => console.log("Spawning Web Dashboard on PID " + os.spawn("webremote.jsos"))
+    },
+    fetch: {
+        desc: "Fetch a URL",
+        fn: async (a) => {
+            if (a.length < 2) { console.log("Usage: fetch <url>"); return; }
+            console.log("Fetching " + a[1] + "...");
+            _promptSuspended = true;
+            try {
+                const text = await os.fetch(a[1]);
+                console.log("\n[" + text.length + " bytes]");
+                console.log(text.length > 500 ? text.substring(0, 500) + "\n...+" : text);
+            } catch(e) { console.log("Fetch failed: " + e); }
+            finally { _promptSuspended = false; render(); }
+        }
+    },
+    node: { desc: "Spawn Node REPL",
+        fn: () => console.log("PID " + os.spawn("node.jsos")) },
+    snake: { desc: "Play Snake",
+        fn: () => console.log("PID " + os.spawn("snake.jsos")) },
+    browser: { desc: "Open browser demo",
+        fn: () => console.log("PID " + os.spawn("demo_browser.jsos")) },
+    sysman: { desc: "System manager",
+        fn: () => console.log("PID " + os.spawn("sysman.jsos")) },
+    store: {
+        desc: "Manage key/value storage usage - set, get, delete, list",
+        fn: (a) => {
+            if (!a[1]) { console.log("Usage: store <set|get|list|delete> ..."); return; }
+            if (a[1] === "set" && a.length >= 4) { os.store.set(a[2], a.slice(3).join(" ")); console.log("OK"); }
+            else if (a[1] === "get" && a.length >= 3) { const v = os.store.get(a[2]); console.log(v || "(not found)"); }
+            else if (a[1] === "delete" && a.length >= 3) { os.store.delete(a[2]); console.log("OK"); }
+            else if (a[1] === "list") { const k = JSON.parse(os.store.list()); console.log(k.length ? k.join("  ") : "(empty)"); }
+            else console.log("Invalid store command.");
+        }
+    },
+    base64: {
+        desc: "Base64 utility - encode or decode",
+        fn: (a) => {
+            if (a.split(" ").length < 2) return;
+            if (a[1] === "decode") console.log(os.base64.decode(a.slice(2).join(" ")));
+            else console.log(os.base64.encode(a.slice(1).join(" ")));
+        }
+    },
+    exec: { desc: "Execute store code",
+        fn: (a) => { if (a[1]) os.exec(a[1]); } },
+    spawn: { desc: "Spawn an app by name",
+        fn: (a) => {
+            if (!a[1]) { console.log("Usage: spawn <app.jsos>"); return; }
+            console.log("Spawned " + a[1] + " on PID " + os.spawn(a[1]));
+        }
+    },
+    edit: {
+        desc: "Edit a text file",
+        fn: (a) => {
+            if (a.length < 2) { console.log("Usage: edit <filename>"); return; }
+            state.editorMode = true;
+            state.editorFile = a[1];
+            const content = os.store.get(a[1]);
+            if (content !== undefined && content !== null) {
+                state.editorLines = content.split('\n');
+                state.editorMsg = "Loaded " + a[1];
+            } else {
+                state.editorLines = [""];
+                state.editorMsg = "New file: " + a[1];
+            }
+            state.editorCx = 0; state.editorCy = 0; state.editorScrollY = 0;
+            state.editorMod = false;
+            render();
+        }
+    },
+    files: {
+        desc: "List files",
+        fn: () => {
+            try { console.log("[Bins]: " + JSON.parse(os.listBin()).join(" ")); } catch(e) {}
+            try {
+                const k = JSON.parse(os.store.list()).filter(k => !k.endsWith(".jsos"));
+                console.log("[Objects]: " + (k.length ? k.join(" ") : "(empty)"));
+            } catch(e) {}
+        }
+    },
+    history: {
+        desc: "Show history",
+        fn: () => {
+            if (state.history.length === 0) { console.log("(no history)"); return; }
+            state.history.forEach((h, i) => console.log(String(i + 1).padEnd(4) + h));
+        }
+    },
+    scroll: {
+        desc: "Scroll terminal",
+        fn: (a) => {
+            const n = parseInt(a[2]) || VISIBLE;
+            if (!a[1] || a[1] === "up") scrollUp(n); else scrollDown(n);
+            render();
+        }
+    },
+    eval: {
+        desc: "Evaluate JavaScript code",
+        fn: (a) => {
+            try { console.log(eval(a.slice(1).join(" "))); }
+            catch(e) { console.log("Error: " + e.message); }
+        }
+    },
+    help: {
+        desc: "Show this help",
+        fn: () => {
+            console.log("Available commands:\n");
+            const maxLen = Math.max(...Object.keys(COMMANDS).map(k => k.length));
+            for (const cmd in COMMANDS) {
+                if (cmd === "?") continue;
+                console.log(cmd.padEnd(maxLen) + " : " + COMMANDS[cmd].desc);
+            }
+        }
+    }
+};
+COMMANDS["?"] = COMMANDS["help"];
+
+globalThis.on_input = function(cmdStr) {
+    const args = cmdStr.trim().split(/\s+/).filter(s => s.length > 0);
+    if (args.length === 0) { render(); return; }
+    const cmd = args[0];
+    if (COMMANDS[cmd]) {
+        try { COMMANDS[cmd].fn(args); }
+        catch(e) { console.log("Error: " + e.message); }
+    } else console.log("Unknown: " + cmd);
+};
+
+// ── Keyboard ───────────────────────────────────────────────────────────────
+
+function handleEditorKey(charCode) {
+    const line = state.editorLines[state.editorCy];
+    switch(charCode) {
+    case 17: case 27: // Ctrl+Q or Esc
+        state.editorMode = false;
+        render();
+        return;
+    case 19: // Ctrl+S
+        if (state.editorFile) {
+            os.store.set(state.editorFile, state.editorLines.join('\n'));
+            state.editorMod = false;
+            state.editorMsg = "Saved to " + state.editorFile;
+        }
+        break;
+    case 13: case 10: // Enter
+        const before = line.slice(0, state.editorCx);
+        const after = line.slice(state.editorCx);
+        state.editorLines[state.editorCy] = before;
+        state.editorLines.splice(state.editorCy + 1, 0, after);
+        state.editorCy++;
+        state.editorCx = 0;
+        state.editorMod = true;
+        break;
+    case 8: // Backspace
+        if (state.editorCx > 0) {
+            state.editorLines[state.editorCy] = line.slice(0, state.editorCx - 1) + line.slice(state.editorCx);
+            state.editorCx--;
+            state.editorMod = true;
+        } else if (state.editorCy > 0) {
+            state.editorCx = state.editorLines[state.editorCy - 1].length;
+            state.editorLines[state.editorCy - 1] += line;
+            state.editorLines.splice(state.editorCy, 1);
+            state.editorCy--;
+            state.editorMod = true;
+        }
+        break;
+    case 0x02: // Left
+        if (state.editorCx > 0) state.editorCx--;
+        else if (state.editorCy > 0) { state.editorCy--; state.editorCx = state.editorLines[state.editorCy].length; }
+        break;
+    case 0x06: // Right
+        if (state.editorCx < line.length) state.editorCx++;
+        else if (state.editorCy < state.editorLines.length - 1) { state.editorCy++; state.editorCx = 0; }
+        break;
+    case 0x10: // Up
+        if (state.editorCy > 0) {
+            state.editorCy--;
+            state.editorCx = Math.min(state.editorCx, state.editorLines[state.editorCy].length);
+        }
+        break;
+    case 0x0E: // Down (Ctrl+N / Arrow Down)
+        if (state.editorCy < state.editorLines.length - 1) {
+            state.editorCy++;
+            state.editorCx = Math.min(state.editorCx, state.editorLines[state.editorCy].length);
+        }
+        break;
+    case 0x1D: { // Ctrl+Left
+        if (state.editorCx > 0) {
+            let i = state.editorCx;
+            while (i > 0 && line[i - 1] === ' ') i--;
+            while (i > 0 && line[i - 1] !== ' ') i--;
+            state.editorCx = i;
+        } else if (state.editorCy > 0) {
+            state.editorCy--;
+            state.editorCx = state.editorLines[state.editorCy].length;
+        }
+        break;
+    }
+    case 0x1E: { // Ctrl+Right
+        if (state.editorCx < line.length) {
+            let i = state.editorCx;
+            while (i < line.length && line[i] === ' ') i++;
+            while (i < line.length && line[i] !== ' ') i++;
+            state.editorCx = i;
+        } else if (state.editorCy < state.editorLines.length - 1) {
+            state.editorCy++;
+            state.editorCx = 0;
+        }
+        break;
+    }
+    default:
+        if (charCode >= 32 && charCode <= 126) {
+            const ch = String.fromCharCode(charCode);
+            state.editorLines[state.editorCy] = line.slice(0, state.editorCx) + ch + line.slice(state.editorCx);
+            state.editorCx++;
+            state.editorMod = true;
+        }
+        break;
+    }
+    
+    if (charCode >= 32 && charCode <= 126 || charCode === 8 || charCode === 13) {
+        if (state.editorMsg.startsWith("Saved") || state.editorMsg.startsWith("Loaded") || state.editorMsg.startsWith("New")) {
+            state.editorMsg = "";
+        }
+    }
+    adjustEditorScroll();
+    render();
+}
+
+function handleShellKey(charCode) {
+    const b = state.buffer;
+    const c = state.cursor;
+    switch (charCode) {
+    case 13: case 10: // Enter
+        const cmd = state.buffer;
+        state.buffer = ""; state.cursor = 0; state.historyIdx = -1; state.savedDraft = "";
+        pushLine("jsos> " + cmd);
+        scrollToBottom();
+        if (cmd.trim().length > 0 && state.history[state.history.length - 1] !== cmd) {
+            state.history.push(cmd);
+            saveHistory();
+        }
+        globalThis.on_input(cmd);
+        render();
+        break;
+    case 8: // Backspace
+        if (c > 0) { state.buffer = b.slice(0, c - 1) + b.slice(c); state.cursor = c - 1; }
+        render(); break;
+    case 0x7F: // Delete
+        if (c < b.length) { state.buffer = b.slice(0, c) + b.slice(c + 1); }
+        render(); break;
+    case 0x02: // Arrow Left
+        state.cursor = Math.max(0, c - 1); render(); break;
+    case 0x06: // Arrow Right
+        state.cursor = Math.min(b.length, c + 1); render(); break;
+    case 0x01: // Ctrl+A
+        state.cursor = 0; render(); break;
+    case 0x05: // Ctrl+E
+        state.cursor = b.length; render(); break;
+    case 0x1D: // Ctrl+Left
+        wordLeft(); render(); break;
+    case 0x1E: // Ctrl+Right
+        wordRight(); render(); break;
+    case 0x0B: // Ctrl+K
+        state.buffer = b.slice(0, c); render(); break;
+    case 0x15: // Ctrl+U
+        state.buffer = ""; state.cursor = 0; render(); break;
+    case 0x17: // Ctrl+W
+        if (c > 0) {
+            let i = c;
+            while (i > 0 && b[i - 1] === ' ') i--;
+            while (i > 0 && b[i - 1] !== ' ') i--;
+            state.buffer = b.slice(0, i) + b.slice(c);
+            state.cursor = i;
+        }
+        render(); break;
+    case 0x10: // Arrow Up
+        if (state.history.length === 0) break;
+        if (state.historyIdx === -1) { state.savedDraft = state.buffer; state.historyIdx = state.history.length - 1; }
+        else if (state.historyIdx > 0) { state.historyIdx--; }
+        state.buffer = state.history[state.historyIdx];
+        state.cursor = state.buffer.length;
+        render(); break;
+    case 0x0E: // Arrow Down
+        if (state.historyIdx === -1) break;
+        if (state.historyIdx < state.history.length - 1) {
+            state.historyIdx++;
+            state.buffer = state.history[state.historyIdx];
+        } else {
+            state.historyIdx = -1;
+            state.buffer = state.savedDraft;
+        }
+        state.cursor = state.buffer.length;
+        render(); break;
+    case 0x1B: // PageUp
+        scrollUp(VISIBLE); render(); break;
+    case 0x1C: // PageDown
+        scrollDown(VISIBLE); render(); break;
+    case 0x03: // Ctrl+C
+        pushLine("jsos> " + b + "^C");
+        state.buffer = ""; state.cursor = 0; state.historyIdx = -1; scrollToBottom(); render(); break;
+    default:
+        if (charCode >= 32 && charCode <= 126) {
+            if (state.historyIdx !== -1) { state.historyIdx = -1; state.savedDraft = ""; }
+            state.buffer = b.slice(0, c) + String.fromCharCode(charCode) + b.slice(c);
+            state.cursor = c + 1;
+            render();
+        }
+        break;
+    }
+}
+
+globalThis.on_key = function(charCode) {
+    if (state.editorMode) handleEditorKey(charCode);
+    else handleShellKey(charCode);
+};
+
+// ── IPC ────────────────────────────────────────────────────────────────────
+globalThis.on_ipc = function(msg) {
+    try {
+        const p = JSON.parse(msg);
+        if (p.type === "KEY")    { globalThis.on_key(p.charCode); return; }
+        if (p.type === "RENDER") { render(); return; }
+        if (p.type === "MOUSE")  { return; }
+        if (p.type === "SCROLL") {
+            if (p.delta > 0) scrollUp(p.delta * 3);
+            else             scrollDown(-p.delta * 3);
+            render();
+            return;
+        }
+    } catch(e) {
+        // Only fall back to on_input if it doesn't look like our JSON events
+        if (msg.startsWith("{")) return;
+    }
+    globalThis.on_input(msg);
+};
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+console.log("Welcome to JSOS - The JavaScript Operating System!");
+console.log("Type 'help' for available commands.");
