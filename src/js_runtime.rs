@@ -8,6 +8,7 @@ use alloc::string::{String, ToString};
 use alloc::format;
 use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
+use alloc::boxed::Box;
 use spin::Mutex;
 use lazy_static::lazy_static;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -39,6 +40,9 @@ const JS_TAG_EXCEPTION: i64 = 6;
 
 // JS_EVAL flags
 const JS_EVAL_TYPE_GLOBAL: c_int = 0;
+
+// QuickJS error message emitted when JS_SetInterruptHandler callback returns non-zero
+pub const JS_INTERRUPT_MSG: &str = "interrupted";
 
 type JSCFunction = unsafe extern "C" fn(ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue) -> JSValue;
 
@@ -79,6 +83,7 @@ extern "C" {
     fn JS_NewArrayBufferCopy(ctx: *mut JSContext, buf: *const u8, len: usize) -> JSValue;
     fn JS_GetArrayBuffer(ctx: *mut JSContext, psize: *mut usize, obj: JSValue) -> *mut u8;
 
+    fn JS_SetInterruptHandler(rt: *mut JSRuntime, cb: Option<unsafe extern "C" fn(*mut JSRuntime, *mut c_void) -> c_int>, opaque: *mut c_void);
 }
 
 // ======== Helpers ========
@@ -446,9 +451,17 @@ pub fn poll_timers() {
                 "if (typeof globalThis.__fireTimer === 'function') {{ globalThis.__fireTimer('{}'); }}",
                 timer_id
             );
-            if let Err(e) = sandbox.eval(&script) {
-                drop(sandbox);
-                crate::process::crash_process(pid, &name, &e);
+            sandbox.start_timeslice();
+            match sandbox.eval(&script) {
+                Ok(_) => {}
+                Err(ref e) if e.contains(JS_INTERRUPT_MSG) => {
+                    // preempted mid-timer callback — not a crash
+                    crate::serial_println!("[sched] preempted timer for pid={}", pid);
+                }
+                Err(e) => {
+                    drop(sandbox);
+                    crate::process::crash_process(pid, &name, &e);
+                }
             }
         }
     }
@@ -488,9 +501,26 @@ pub fn cleanup_process_resources(pid: u32) {
 
 // ======== QuickJS Sandbox ========
 
+struct TimesliceState {
+    start_tick: AtomicU64,
+    budget_ticks: u64,
+}
+
+unsafe extern "C" fn js_timeslice_interrupt_handler(
+    _rt: *mut JSRuntime,
+    opaque: *mut c_void,
+) -> c_int {
+    let state = &*(opaque as *const TimesliceState);
+    let elapsed = crate::interrupts::TICKS
+        .load(Ordering::Relaxed)
+        .saturating_sub(state.start_tick.load(Ordering::Relaxed));
+    if elapsed > state.budget_ticks { 1 } else { 0 }
+}
+
 pub struct QuickJsSandbox {
     rt: *mut JSRuntime,
     ctx: *mut JSContext,
+    timeslice: Box<TimesliceState>,
 }
 
 unsafe impl Send for QuickJsSandbox {}
@@ -506,6 +536,13 @@ impl QuickJsSandbox {
                 JS_FreeRuntime(rt);
                 return Err("Failed to create JS context");
             }
+
+            let timeslice = Box::new(TimesliceState {
+                start_tick: AtomicU64::new(0),
+                budget_ticks: 1, // 1 tick = 10ms at 100 Hz — one timeslice per process per frame
+            });
+            let opaque = &*timeslice as *const TimesliceState as *mut c_void;
+            JS_SetInterruptHandler(rt, Some(js_timeslice_interrupt_handler), opaque);
 
             // Register os.* namespace
             register_os_namespace(ctx);
@@ -666,8 +703,15 @@ impl QuickJsSandbox {
                 JS_FreeValue(ctx, v);
             }
 
-            Ok(Self { rt, ctx })
+            Ok(Self { rt, ctx, timeslice })
         }
+    }
+
+    pub fn start_timeslice(&mut self) {
+        self.timeslice.start_tick.store(
+            crate::interrupts::TICKS.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
     }
 
     pub fn eval(&mut self, script: &str) -> Result<String, String> {
@@ -707,8 +751,12 @@ impl QuickJsSandbox {
                     let ctx = if pctx.is_null() { self.ctx } else { pctx };
                     let exc = JS_GetException(ctx);
                     let msg = js_to_rust_string(ctx, exc);
-                    crate::serial_println!("JS Async Error: {}", msg);
                     JS_FreeValue(ctx, exc);
+                    if msg.contains(JS_INTERRUPT_MSG) {
+                        // Preempted — not a crash. Resume next frame.
+                        return Ok(());
+                    }
+                    crate::serial_println!("JS Async Error: {}", msg);
                     return Err(msg);
                 }
             }
