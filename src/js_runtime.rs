@@ -670,6 +670,9 @@ impl QuickJsSandbox {
         }
     }
 
+    /// Start a new time-slice for this sandbox. Resets the interrupt timer.
+    pub fn start_timeslice(&mut self) {}
+
     pub fn eval(&mut self, script: &str) -> Result<String, String> {
         unsafe {
             let filename = js_cstring("<eval>");

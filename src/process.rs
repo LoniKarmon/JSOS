@@ -233,12 +233,17 @@ pub fn poll_processes() {
     };
     if let Some((arc, name)) = active_info {
         let mut sandbox = arc.lock();
+        sandbox.start_timeslice();
         for k in keys {
             let script = alloc::format!(
                 "if (typeof globalThis.on_key === 'function') {{ globalThis.on_key({}); }}",
                 k as u32
             );
             if let Err(e) = sandbox.eval(&script) {
+                if e.contains("interrupted") {
+                    crate::serial_println!("[sched] preempted {} (pid={}) on key handler", name, active_pid);
+                    break;
+                }
                 drop(sandbox);
                 crash_process(active_pid, &name, &e);
                 break;
@@ -309,6 +314,7 @@ pub fn poll_processes() {
 
         let crash_err: Option<String> = {
             let mut sandbox = sandbox_arc.lock();
+            sandbox.start_timeslice();
             let mut err = None;
 
             for msg in messages {
@@ -337,7 +343,11 @@ pub fn poll_processes() {
         };
 
         if let Some(e) = crash_err {
-            crash_process(pid, &name, &e);
+            if e.contains("interrupted") {
+                crate::serial_println!("[sched] preempted {} (pid={})", name, pid);
+            } else {
+                crash_process(pid, &name, &e);
+            }
         }
     }
 }
