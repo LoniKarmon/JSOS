@@ -135,3 +135,124 @@ pub fn write_pixel(buf: &mut [u32], bw: usize, bh: usize, x: i32, y: i32, r: u8,
     if x < 0 || y < 0 || x as usize >= bw || y as usize >= bh { return; }
     buf[y as usize * bw + x as usize] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
 }
+
+pub fn fill_rect_buf(
+    buf: &mut [u32], bw: usize, bh: usize,
+    x: f64, y: f64, w: f64, h: f64,
+    color: (u8, u8, u8), transform: &[f64; 6],
+) {
+    let corners = [
+        transform_point(transform, x, y),
+        transform_point(transform, x + w, y),
+        transform_point(transform, x + w, y + h),
+        transform_point(transform, x, y + h),
+    ];
+    let segs = [
+        (corners[0].0, corners[0].1, corners[1].0, corners[1].1),
+        (corners[1].0, corners[1].1, corners[2].0, corners[2].1),
+        (corners[2].0, corners[2].1, corners[3].0, corners[3].1),
+        (corners[3].0, corners[3].1, corners[0].0, corners[0].1),
+    ];
+    scanline_fill(buf, bw, bh, &segs, color);
+}
+
+pub fn clear_rect_buf(buf: &mut [u32], bw: usize, bh: usize, x: f64, y: f64, w: f64, h: f64) {
+    let x0 = (libm::floor(x) as i32).max(0);
+    let y0 = (libm::floor(y) as i32).max(0);
+    let x1 = (libm::ceil(x + w) as i32).min(bw as i32);
+    let y1 = (libm::ceil(y + h) as i32).min(bh as i32);
+    for row in y0..y1 {
+        for col in x0..x1 {
+            buf[row as usize * bw + col as usize] = 0;
+        }
+    }
+}
+
+pub fn stroke_rect_buf(
+    buf: &mut [u32], bw: usize, bh: usize,
+    x: f64, y: f64, w: f64, h: f64,
+    color: (u8, u8, u8), line_width: f64, transform: &[f64; 6],
+) {
+    let corners = [
+        transform_point(transform, x, y),
+        transform_point(transform, x + w, y),
+        transform_point(transform, x + w, y + h),
+        transform_point(transform, x, y + h),
+    ];
+    draw_line_buf(buf, bw, bh, corners[0].0, corners[0].1, corners[1].0, corners[1].1, color, line_width);
+    draw_line_buf(buf, bw, bh, corners[1].0, corners[1].1, corners[2].0, corners[2].1, color, line_width);
+    draw_line_buf(buf, bw, bh, corners[2].0, corners[2].1, corners[3].0, corners[3].1, color, line_width);
+    draw_line_buf(buf, bw, bh, corners[3].0, corners[3].1, corners[0].0, corners[0].1, color, line_width);
+}
+
+/// Bresenham line with thickness: for each point on the 1px line, fills a square of radius `lw`.
+pub fn draw_line_buf(
+    buf: &mut [u32], bw: usize, bh: usize,
+    x0: f64, y0: f64, x1: f64, y1: f64,
+    color: (u8, u8, u8), line_width: f64,
+) {
+    let lw = (libm::ceil(line_width / 2.0) as i32).max(0);
+    let mut x0i = libm::round(x0) as i32;
+    let mut y0i = libm::round(y0) as i32;
+    let x1i = libm::round(x1) as i32;
+    let y1i = libm::round(y1) as i32;
+    let dx = (x1i - x0i).abs();
+    let dy = -(y1i - y0i).abs();
+    let sx = if x0i < x1i { 1 } else { -1 };
+    let sy = if y0i < y1i { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        for dy2 in -lw..=lw {
+            for dx2 in -lw..=lw {
+                write_pixel(buf, bw, bh, x0i + dx2, y0i + dy2, color.0, color.1, color.2);
+            }
+        }
+        if x0i == x1i && y0i == y1i { break; }
+        let e2 = 2 * err;
+        if e2 >= dy { err += dy; x0i += sx; }
+        if e2 <= dx { err += dx; y0i += sy; }
+    }
+}
+
+/// Scanline even-odd fill for a list of line segments (x0,y0,x1,y1).
+pub fn scanline_fill(
+    buf: &mut [u32], bw: usize, bh: usize,
+    segments: &[(f64, f64, f64, f64)],
+    color: (u8, u8, u8),
+) {
+    if segments.is_empty() { return; }
+    let mut min_y = f64::MAX;
+    let mut max_y = f64::MIN;
+    for &(x0, y0, x1, y1) in segments {
+        let _ = x0; let _ = x1;
+        if y0 < min_y { min_y = y0; }
+        if y1 < min_y { min_y = y1; }
+        if y0 > max_y { max_y = y0; }
+        if y1 > max_y { max_y = y1; }
+    }
+    let start_y = (libm::ceil(min_y) as i32).max(0);
+    let end_y   = (libm::ceil(max_y) as i32).min(bh as i32);
+
+    let mut xs: Vec<f64> = Vec::new();
+    for y in start_y..end_y {
+        let yf = y as f64 + 0.5;
+        xs.clear();
+        for &(x0, y0, x1, y1) in segments {
+            let (lo, hi) = if y0 <= y1 { (y0, y1) } else { (y1, y0) };
+            if yf < lo || yf >= hi { continue; }
+            let t = (yf - y0) / (y1 - y0);
+            xs.push(x0 + t * (x1 - x0));
+        }
+        if xs.len() < 2 { continue; }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+        let mut i = 0;
+        while i + 1 < xs.len() {
+            let x_start = (libm::ceil(xs[i]) as i32).max(0);
+            let x_end   = (libm::ceil(xs[i+1]) as i32).min(bw as i32);
+            for x in x_start..x_end {
+                write_pixel(buf, bw, bh, x, y, color.0, color.1, color.2);
+            }
+            i += 2;
+        }
+    }
+}
