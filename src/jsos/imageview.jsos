@@ -1,3 +1,5 @@
+import { Window, Keys } from 'libjsos.js';
+
 const WIN_W = 960, WIN_H = 960;
 
 const imageKeys = JSON.parse(os.store.list() || '[]')
@@ -9,8 +11,8 @@ if (imageKeys.length === 0) {
     os.exit();
 }
 
-const win = os.window.create(100, 50, WIN_W, WIN_H);
-const pixelBuf = new Uint32Array(os.window.getPixelBuffer(win));
+const win = new Window(100, 50, WIN_W, WIN_H);
+const pixelBuf = win.pixels();
 
 let currentIndex = 0;
 
@@ -19,10 +21,10 @@ function loadImage(index) {
 
     const key = imageKeys[index];
     const buffer = os.store.getBytes(key);
-    if (!buffer) { os.window.flush(win); return; }
+    if (!buffer) { win.flush(); return; }
 
     const img = os.image.decode(buffer);
-    if (!img) { os.window.flush(win); return; }
+    if (!img) { win.flush(); return; }
 
     const srcW = img.width;
     const srcH = img.height;
@@ -35,39 +37,35 @@ function loadImage(index) {
         }
     }
 
-    os.window.flush(win);
+    win.flush();
 }
 
 function drawLabel() {
     const key = imageKeys[currentIndex];
     const label = key + " [" + (currentIndex + 1) + "/" + imageKeys.length + "]";
-    os.window.drawString(win, label, 4, 12, 255, 255, 255);
-    os.window.drawString(win, "< > navigate  Q quit", 4, WIN_H - 8, 180, 180, 180);
+    win.text(4, 12, label, 255, 255, 255);
+    win.text(4, WIN_H - 8, "< > navigate  Q quit", 180, 180, 180);
 }
 
-globalThis.on_key = function(charCode) {
-    if (charCode === 0x06) {
+function on_key(charCode) {
+    if (Keys.RIGHT === charCode || charCode === 0x06) {
         currentIndex = (currentIndex + 1) % (imageKeys.length);
         loadImage(currentIndex);
-    } else if (charCode === 0x02) {
+    } else if (Keys.LEFT === charCode || charCode === 0x02) {
         currentIndex = (currentIndex - 1 + (imageKeys.length)) % (imageKeys.length);
         loadImage(currentIndex);
-    } else if (charCode === 113 || charCode === 81 || charCode === 27) {
+    } else if (Keys.isQuit(charCode)) {
         os.exit();
     }
-};
+}
 
-globalThis.on_ipc = function(msg) {
-    try {
-        const m = JSON.parse(msg);
-        if (m.type === "RENDER") {
-            os.window.flush(win);
-            drawLabel();
-        } else if (m.type === "KEY") {
-            globalThis.on_key(m.charCode);
-        }
-    } catch(e) {}
-};
+win.installIpc({
+    key: on_key,
+    render: function() {
+        win.flush();
+        drawLabel();
+    },
+});
 
 loadImage(currentIndex);
 drawLabel();

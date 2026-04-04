@@ -6,13 +6,11 @@ import css    from 'css';
 import layout from 'layout';
 import paint  from 'paint';
 
+import { Window, Keys } from 'libjsos.js';
+
 // ── Window ────────────────────────────────────────────────────────────────────
 const W = 680, H = 520;
-const state = {
-    winId: os.window.create(60, 30, W, H),
-    width: W,
-    height: H
-};
+const win = new Window(60, 30, W, H);
 
 // ── Page content ──────────────────────────────────────────────────────────────
 const PAGE_HTML = `<!DOCTYPE html>
@@ -63,35 +61,29 @@ function updateLayout() {
     css.applyStyles(domRoot, rules, {});
 
     // 3. Layout (calculate absolute positions)
-    cachedCmds = layout.layoutDOM(domRoot, { x: 0, y: 0, w: state.width, h: state.height });
+    cachedCmds = layout.layoutDOM(domRoot, { x: 0, y: 0, w: W, h: H });
 }
 
 function render() {
     // 4. Paint background
-    os.window.drawRect(state.winId, 0, 0, state.width, state.height, 10, 10, 26);
-    
+    win.rect(0, 0, W, H, 10, 10, 26);
+
     // 5. Paint cached commands
-    paint.paint(cachedCmds, state.winId);
+    paint.paint(cachedCmds, win.id);
 
     // 6. Flush
-    os.window.flush(state.winId);
+    win.flush();
 }
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
-globalThis.on_ipc = function(msg) {
-    try {
-        const parsed = JSON.parse(msg);
-        if (parsed.type === 'RENDER') {
-            render();
+win.installIpc({
+    render: render,
+    key: function(charCode) {
+        if (Keys.isQuit(charCode)) {
+            os.exit();
         }
-    } catch (e) {}
-};
-
-globalThis.on_key = function(charCode) {
-    if (charCode === 113 || charCode === 27) { // q or ESC
-        os.exit();
-    }
-};
+    },
+});
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 updateLayout();
