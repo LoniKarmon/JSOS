@@ -1991,13 +1991,102 @@ unsafe extern "C" fn js_canvas_draw_image(
     js_undefined()
 }
 
+/// getImageData(x, y, w, h) → { width, height, data: ArrayBuffer (RGBA u8×4) }
 unsafe extern "C" fn js_canvas_get_image_data(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 4 { return js_null(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let x  = js_val_to_f64(ctx, *argv.offset(0)) as i32;
+    let y  = js_val_to_f64(ctx, *argv.offset(1)) as i32;
+    let rw = js_val_to_f64(ctx, *argv.offset(2)) as usize;
+    let rh = js_val_to_f64(ctx, *argv.offset(3)) as usize;
+    if rw == 0 || rh == 0 { return js_null(); }
 
+    let rgba_data: Vec<u8> = {
+        let buffers = WINDOW_BUFFERS.lock();
+        match buffers.get(&win_id) {
+            None => return js_null(),
+            Some(win) => {
+                let mut out = Vec::with_capacity(rw * rh * 4);
+                for row in 0..rh {
+                    let src_y = (y + row as i32).max(0) as usize;
+                    for col in 0..rw {
+                        let src_x = (x + col as i32).max(0) as usize;
+                        let px = if src_x < win.width && src_y < win.height {
+                            win.pixels[src_y * win.width + src_x]
+                        } else { 0 };
+                        out.push(((px >> 16) & 0xFF) as u8); // R
+                        out.push(((px >>  8) & 0xFF) as u8); // G
+                        out.push(( px        & 0xFF) as u8); // B
+                        out.push(255u8);                     // A
+                    }
+                }
+                out
+            }
+        }
+    };
+
+    let byte_len = rgba_data.len();
+    let raw = rgba_data.as_ptr() as *mut u8;
+    core::mem::forget(rgba_data);
+
+    unsafe extern "C" fn free_rgba(_rt: *mut JSRuntime, opaque: *mut c_void, ptr: *mut c_void) {
+        let count = opaque as usize;
+        drop(Vec::from_raw_parts(ptr as *mut u8, count, count));
+    }
+
+    let data_ab = JS_NewArrayBuffer(ctx, raw, byte_len, Some(free_rgba), byte_len as *mut c_void, false);
+    let result = JS_NewObject(ctx);
+    set_prop_obj(ctx, result, "width",  js_int(rw as i32));
+    set_prop_obj(ctx, result, "height", js_int(rh as i32));
+    set_prop_obj(ctx, result, "data",   data_ab);
+    result
+}
+
+/// putImageData(imageData, dx, dy)  — imageData = { width, height, data: ArrayBuffer (RGBA u8×4) }
 unsafe extern "C" fn js_canvas_put_image_data(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 3 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let img_data = *argv.offset(0);
+    let dx = js_val_to_f64(ctx, *argv.offset(1)) as i32;
+    let dy = js_val_to_f64(ctx, *argv.offset(2)) as i32;
+
+    let cw = js_cstring("width");  let w_val = JS_GetPropertyStr(ctx, img_data, cw.as_ptr() as *const c_char);
+    let ch = js_cstring("height"); let h_val = JS_GetPropertyStr(ctx, img_data, ch.as_ptr() as *const c_char);
+    let cd = js_cstring("data");   let d_val = JS_GetPropertyStr(ctx, img_data, cd.as_ptr() as *const c_char);
+    let iw = js_val_to_i32(ctx, w_val) as usize;
+    let ih = js_val_to_i32(ctx, h_val) as usize;
+    JS_FreeValue(ctx, w_val);
+    JS_FreeValue(ctx, h_val);
+
+    let mut data_size: usize = 0;
+    let data_ptr = JS_GetArrayBuffer(ctx, &mut data_size, d_val);
+    JS_FreeValue(ctx, d_val);
+    if data_ptr.is_null() { return js_undefined(); }
+    let rgba = core::slice::from_raw_parts(data_ptr as *const u8, data_size);
+
+    if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+        for row in 0..ih {
+            let dst_y = dy + row as i32;
+            if dst_y < 0 || dst_y >= win.height as i32 { continue; }
+            for col in 0..iw {
+                let dst_x = dx + col as i32;
+                if dst_x < 0 || dst_x >= win.width as i32 { continue; }
+                let i = (row * iw + col) * 4;
+                if i + 3 >= rgba.len() { break; }
+                let r = rgba[i] as u32;
+                let g = rgba[i+1] as u32;
+                let b = rgba[i+2] as u32;
+                win.pixels[dst_y as usize * win.width + dst_x as usize] =
+                    (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+    js_undefined()
+}
 
 unsafe extern "C" fn js_canvas_save(
     _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
