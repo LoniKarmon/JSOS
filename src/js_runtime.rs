@@ -62,6 +62,7 @@ extern "C" {
     fn JS_ToCStringLen2(ctx: *mut JSContext, len: *mut usize, val: JSValue, cesu8: c_int) -> *const c_char;
     fn JS_FreeCString(ctx: *mut JSContext, ptr: *const c_char);
     fn JS_ToInt32(ctx: *mut JSContext, pres: *mut i32, val: JSValue) -> c_int;
+    fn JS_ToFloat64(ctx: *mut JSContext, pres: *mut f64, val: JSValue) -> c_int;
 
     fn JS_GetException(ctx: *mut JSContext) -> JSValue;
 
@@ -95,6 +96,11 @@ fn js_int(v: i32) -> JSValue {
     JSValue { u: v as u64, tag: JS_TAG_INT }
 }
 
+fn js_float(v: f64) -> JSValue {
+    // JS_TAG_FLOAT64 = 8 in QuickJS-NG (non-NaN-boxing 64-bit layout)
+    JSValue { u: v.to_bits(), tag: 8 }
+}
+
 fn js_is_exception(v: JSValue) -> bool {
     v.tag == JS_TAG_EXCEPTION
 }
@@ -117,6 +123,40 @@ unsafe fn js_val_to_i32(ctx: *mut JSContext, val: JSValue) -> i32 {
     result
 }
 
+unsafe fn js_val_to_f64(ctx: *mut JSContext, val: JSValue) -> f64 {
+    let mut result: f64 = 0.0;
+    JS_ToFloat64(ctx, &mut result, val);
+    result
+}
+
+unsafe fn js_str(ctx: *mut JSContext, s: &str) -> JSValue {
+    JS_NewStringLen(ctx, s.as_ptr() as *const c_char, s.len())
+}
+
+unsafe fn read_str_prop(ctx: *mut JSContext, obj: JSValue, key: &str) -> String {
+    let ckey = js_cstring(key);
+    let val = JS_GetPropertyStr(ctx, obj, ckey.as_ptr() as *const c_char);
+    let s = js_to_rust_string(ctx, val);
+    JS_FreeValue(ctx, val);
+    s
+}
+
+unsafe fn read_f64_prop(ctx: *mut JSContext, obj: JSValue, key: &str) -> f64 {
+    let ckey = js_cstring(key);
+    let val = JS_GetPropertyStr(ctx, obj, ckey.as_ptr() as *const c_char);
+    let f = js_val_to_f64(ctx, val);
+    JS_FreeValue(ctx, val);
+    f
+}
+
+/// Read `this._id` from a canvas context JS object to get the win_id.
+unsafe fn read_ctx_id(ctx: *mut JSContext, this_val: JSValue) -> u32 {
+    let ckey = js_cstring("_id");
+    let val = JS_GetPropertyStr(ctx, this_val, ckey.as_ptr() as *const c_char);
+    let id = js_val_to_i32(ctx, val) as u32;
+    JS_FreeValue(ctx, val);
+    id
+}
 
 unsafe fn js_cstring(s: &str) -> Vec<u8> {
     let mut v: Vec<u8> = Vec::with_capacity(s.len() + 1);
@@ -232,6 +272,8 @@ pub struct WindowBuffer {
 
 lazy_static! {
     pub static ref WINDOW_BUFFERS: Mutex<BTreeMap<u32, WindowBuffer>> = Mutex::new(BTreeMap::new());
+    pub static ref CANVAS_CONTEXTS: Mutex<BTreeMap<u32, crate::canvas::CanvasContext>> =
+        Mutex::new(BTreeMap::new());
     static ref NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
     static ref NEXT_Z_INDEX: spin::Mutex<u32> = spin::Mutex::new(1);
 }
