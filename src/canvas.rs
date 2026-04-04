@@ -2,6 +2,7 @@
 use alloc::vec::Vec;
 use alloc::string::String;
 
+#[derive(Clone)]
 pub enum PathCmd {
     MoveTo(f64, f64),
     LineTo(f64, f64),
