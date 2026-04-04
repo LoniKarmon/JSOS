@@ -367,3 +367,55 @@ pub fn flatten_path(path: &[PathCmd]) -> Vec<(f64, f64, f64, f64)> {
     }
     segs
 }
+
+/// Fill the current path using scanline even-odd rule.
+pub fn fill_path(
+    buf: &mut [u32], bw: usize, bh: usize,
+    path: &[PathCmd], transform: &[f64; 6],
+    color: (u8, u8, u8),
+) {
+    let segs = flatten_path(path);
+    let transformed: Vec<(f64, f64, f64, f64)> = segs.iter().map(|&(x0,y0,x1,y1)| {
+        let (tx0, ty0) = transform_point(transform, x0, y0);
+        let (tx1, ty1) = transform_point(transform, x1, y1);
+        (tx0, ty0, tx1, ty1)
+    }).collect();
+    scanline_fill(buf, bw, bh, &transformed, color);
+}
+
+/// Stroke the current path with the given line width.
+pub fn stroke_path(
+    buf: &mut [u32], bw: usize, bh: usize,
+    path: &[PathCmd], transform: &[f64; 6],
+    color: (u8, u8, u8), line_width: f64,
+) {
+    let segs = flatten_path(path);
+    for (x0, y0, x1, y1) in segs {
+        let (tx0, ty0) = transform_point(transform, x0, y0);
+        let (tx1, ty1) = transform_point(transform, x1, y1);
+        draw_line_buf(buf, bw, bh, tx0, ty0, tx1, ty1, color, line_width);
+    }
+}
+
+/// Blit pixels from `src` into `buf` with nearest-neighbor scaling.
+/// Source crop: `(sx, sy, sw, sh)`. Destination: `(dx, dy, dw, dh)`.
+pub fn blit_image(
+    buf: &mut [u32], bw: usize, bh: usize,
+    src: &[u32], src_w: usize, src_h: usize,
+    sx: usize, sy: usize, sw: usize, sh: usize,
+    dx: i32, dy: i32, dw: usize, dh: usize,
+) {
+    for row in 0..dh {
+        let dst_y = dy + row as i32;
+        if dst_y < 0 || dst_y >= bh as i32 { continue; }
+        for col in 0..dw {
+            let dst_x = dx + col as i32;
+            if dst_x < 0 || dst_x >= bw as i32 { continue; }
+            let src_x = sx + (col * sw / dw.max(1)).min(sw.saturating_sub(1));
+            let src_y_idx = sy + (row * sh / dh.max(1)).min(sh.saturating_sub(1));
+            if src_x >= src_w || src_y_idx >= src_h { continue; }
+            let px = src[src_y_idx * src_w + src_x];
+            buf[dst_y as usize * bw + dst_x as usize] = px;
+        }
+    }
+}
