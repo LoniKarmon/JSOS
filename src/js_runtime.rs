@@ -2089,36 +2089,128 @@ unsafe extern "C" fn js_canvas_put_image_data(
 }
 
 unsafe extern "C" fn js_canvas_save(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(ctx, this_val);
+    let fill_style   = read_str_prop(ctx, this_val, "fillStyle");
+    let stroke_style = read_str_prop(ctx, this_val, "strokeStyle");
+    let line_width   = read_f64_prop(ctx, this_val, "lineWidth");
+    let font         = read_str_prop(ctx, this_val, "font");
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.state_stack.push(crate::canvas::CanvasState {
+            fill_style, stroke_style, line_width, font, transform: c.transform,
+        });
+    }
+    js_undefined()
+}
 
 unsafe extern "C" fn js_canvas_restore(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(ctx, this_val);
+    let state = {
+        let mut ctxs = CANVAS_CONTEXTS.lock();
+        ctxs.get_mut(&win_id).and_then(|c| {
+            let s = c.state_stack.pop();
+            if let Some(ref st) = s { c.transform = st.transform; }
+            s
+        })
+    };
+    if let Some(s) = state {
+        set_prop_obj(ctx, this_val, "fillStyle",   js_str(ctx, &s.fill_style));
+        set_prop_obj(ctx, this_val, "strokeStyle", js_str(ctx, &s.stroke_style));
+        set_prop_obj(ctx, this_val, "lineWidth",   js_float(s.line_width));
+        set_prop_obj(ctx, this_val, "font",        js_str(ctx, &s.font));
+    }
+    js_undefined()
+}
 
 unsafe extern "C" fn js_canvas_translate(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 2 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let tx = js_val_to_f64(ctx, *argv.offset(0));
+    let ty = js_val_to_f64(ctx, *argv.offset(1));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        let t = [1.0, 0.0, 0.0, 1.0, tx, ty];
+        c.transform = crate::canvas::multiply_transform(&t, &c.transform);
+    }
+    js_undefined()
+}
 
 unsafe extern "C" fn js_canvas_rotate(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 1 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let angle = js_val_to_f64(ctx, *argv.offset(0));
+    let cos_a = libm::cos(angle);
+    let sin_a = libm::sin(angle);
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        let rot = [cos_a, sin_a, -sin_a, cos_a, 0.0, 0.0];
+        c.transform = crate::canvas::multiply_transform(&rot, &c.transform);
+    }
+    js_undefined()
+}
 
 unsafe extern "C" fn js_canvas_scale(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 2 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let sx = js_val_to_f64(ctx, *argv.offset(0));
+    let sy = js_val_to_f64(ctx, *argv.offset(1));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        let s = [sx, 0.0, 0.0, sy, 0.0, 0.0];
+        c.transform = crate::canvas::multiply_transform(&s, &c.transform);
+    }
+    js_undefined()
+}
 
 unsafe extern "C" fn js_canvas_set_transform(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 6 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let a = js_val_to_f64(ctx, *argv.offset(0));
+    let b = js_val_to_f64(ctx, *argv.offset(1));
+    let c_ = js_val_to_f64(ctx, *argv.offset(2));
+    let d = js_val_to_f64(ctx, *argv.offset(3));
+    let e = js_val_to_f64(ctx, *argv.offset(4));
+    let f = js_val_to_f64(ctx, *argv.offset(5));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.transform = [a, b, c_, d, e, f];
+    }
+    js_undefined()
+}
 
 unsafe extern "C" fn js_canvas_reset_transform(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(ctx, this_val);
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    }
+    js_undefined()
+}
 
+/// ctx.flush() — blit the window pixel buffer to the framebuffer.
 unsafe extern "C" fn js_canvas_flush(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(ctx, this_val);
+    let blit_args = {
+        let buffers = WINDOW_BUFFERS.lock();
+        buffers.get(&win_id)
+            .filter(|win| win.pixel_buffer_active)
+            .map(|win| (win.x, win.y, win.width, win.height, win.pixels.clone()))
+    };
+    if let Some((x, y, w, h, pixels)) = blit_args {
+        crate::framebuffer::blit_window_pixels(x, y, w, h, &pixels);
+    }
+    js_undefined()
+}
 
 /// Subtract occluder `sub` from every rect in `list`, returning only the
 /// visible fragments.  Each input rect may produce up to 4 output fragments.
