@@ -66,8 +66,8 @@ fn test_sandbox_isolation() {
     let val1 = sandbox1_arc.lock().eval("globalThis.secret");
     let val2 = sandbox2_arc.lock().eval("globalThis.secret");
     
-    assert_eq!(val1, "10");
-    assert_eq!(val2, "20");
+    assert_eq!(val1.unwrap(), "10");
+    assert_eq!(val2.unwrap(), "20");
 }
 
 #[test_case]

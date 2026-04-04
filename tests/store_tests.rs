@@ -117,9 +117,9 @@ fn test_object_store_quickjs_exec() {
     }
     
     // Evaluate it through QuickJS, dropping the Sandbox immediately to catch leaks
-    if let Some(mut sandbox) = os::js_runtime::QuickJsSandbox::new() {
+    if let Ok(mut sandbox) = os::js_runtime::QuickJsSandbox::new() {
         let result = sandbox.eval("os.exec('my_script')");
-        assert_eq!(result, "undefined"); // Expect 'undefined' with properly mapped values
+        assert_eq!(result.unwrap(), "undefined"); // Expect 'undefined' with properly mapped values
     } else {
         panic!("Failed to initialize QuickJsSandbox in test");
     }
