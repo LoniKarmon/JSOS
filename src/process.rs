@@ -318,13 +318,23 @@ pub fn poll_processes() {
                     "if (typeof globalThis.on_ipc === 'function') {{ globalThis.on_ipc({}); }}",
                     json_quote(&msg)
                 );
-                if let Err(e) = sandbox.eval(&script) {
-                    err = Some(e);
-                    break;
+                sandbox.start_timeslice();
+                match sandbox.eval(&script) {
+                    Ok(_) => {}
+                    Err(ref e) if e.contains(crate::js_runtime::JS_INTERRUPT_MSG) => {
+                        // preempted mid-IPC dispatch — not a crash
+                        crate::serial_println!("[sched] preempted ipc for pid={}", pid);
+                        break;
+                    }
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
                 }
             }
 
             if err.is_none() {
+                sandbox.start_timeslice();
                 if let Err(e) = sandbox.execute_pending_jobs() {
                     err = Some(e);
                 } else {
