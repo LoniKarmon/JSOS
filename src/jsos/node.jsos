@@ -1,6 +1,8 @@
 // src/js/node.js
 // Native JavaScript Evaluation Environment
 
+const { Window, Keys } = require('libjsos.js');
+
 // Transform let/const → var so bindings survive across REPL eval() calls.
 // QuickJS scopes `let`/`const` to a single JS_Eval invocation; `var` leaks
 // to globalThis and persists for the lifetime of the JS context.
@@ -30,8 +32,10 @@ globalThis.on_input = function (cmdStr) {
         console.log("Uncaught Exception: " + e.message);
     }
 };
+
+const win = new Window(100, 50, 600, 450);
 const state = {
-    winId: os.window.create(100, 50, 600, 450),
+    winId: win.id,
     width: 600,
     height: 450
 };
@@ -42,41 +46,40 @@ let dirty = true;
 
 function render() {
     if (!dirty) return;
-    
+
     // Draw Terminal Background (Dark Blue-Grey)
-    os.window.drawRect(state.winId, 0, 0, state.width, state.height, 30, 40, 50);
-    
+    win.rect(0, 0, state.width, state.height, 30, 40, 50);
+
     // Draw Shell History
     let drawY = 30;
     for (let i = Math.max(0, history.length - 20); i < history.length; i++) {
-        os.window.drawString(state.winId, history[i], 20, drawY, 200, 200, 200);
+        win.text(20, drawY, history[i], 200, 200, 200);
         drawY += 20;
     }
-    
+
     // Draw Current Input — show only the tail that fits in the window
     const maxInputChars = Math.floor((state.width - 24) / 8) - 6; // 8px/char, subtract "node> "
     const displayBuf = buffer.length > maxInputChars ? buffer.slice(-maxInputChars) : buffer;
     const cursor = os.uptime() % 2 === 0 ? "_" : "";
-    os.window.drawString(state.winId, "node> " + displayBuf + cursor, 20, drawY, 0, 255, 0);
-    
-    os.window.flush(state.winId);
+    win.text(20, drawY, "node> " + displayBuf + cursor, 0, 255, 0);
+
+    win.flush();
     dirty = false;
 }
 
-// Handle IPC from winman (RENDER and KEY events)
-globalThis.on_ipc = function (msg) {
-    try {
-        const parsed = JSON.parse(msg);
-        if (parsed.type === "RENDER") {
-            dirty = true;
-            render();
-        } else if (parsed.type === "KEY") {
-            globalThis.on_key(parsed.charCode);
-        }
-    } catch (e) {}
-};
-
-// Rendering is now driven entirely by winman RENDER IPC messages
+function on_key(charCode) {
+    if (Keys.isEnter(charCode)) {
+        history.push("node> " + buffer);
+        globalThis.on_input(buffer);
+        buffer = "";
+    } else if (Keys.isBackspace(charCode)) {
+        buffer = buffer.slice(0, -1);
+    } else if (Keys.isPrintable(charCode)) {
+        buffer += Keys.toChar(charCode);
+    }
+    dirty = true;
+    render();
+}
 
 const _sysLog = console.log;
 console.log = function(msg) {
@@ -86,19 +89,13 @@ console.log = function(msg) {
     render();
 };
 
-globalThis.on_key = function (charCode) {
-    if (charCode === 10 || charCode === 13) { // Enter
-        history.push("node> " + buffer);
-        globalThis.on_input(buffer);
-        buffer = "";
-    } else if (charCode === 8) { // Backspace
-        buffer = buffer.slice(0, -1);
-    } else if (charCode >= 32 && charCode <= 126) {
-        buffer += String.fromCharCode(charCode);
+win.installIpc({
+    key: on_key,
+    render: function() {
+        dirty = true;
+        render();
     }
-    dirty = true;
-    render();
-};
+});
 
 function reset() {
     buffer = "";
@@ -109,4 +106,3 @@ function reset() {
 reset();
 render();
 os.store.set("focus_pid", String(globalThis.__PID));
-
