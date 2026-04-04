@@ -34,3 +34,11 @@ globalThis.AbortSignal = {
         return ctrl.signal;
     }
 };
+
+if (typeof process !== 'undefined') {
+    if (!process.argv) process.argv = ['jsos', String(typeof __PID !== 'undefined' ? __PID : 0)];
+    if (!process.exit) process.exit = function() { os.exit(); };
+    if (!process.platform) process.platform = 'jsos';
+    if (!process.version) process.version = 'v18.0.0';
+    if (!process.versions) process.versions = { node: '18.0.0' };
+}
