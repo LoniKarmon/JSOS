@@ -1,0 +1,49 @@
+// stress_test.jsos - Preemption demo: deliberately hogs CPU, shows spin count
+
+const W = 400, H = 200;
+const winId = os.window.create(200, 150, W, H);
+
+const PID = String(globalThis.__PID);
+let spinCount = 0;
+
+function spinBusy(iterations) {
+    let x = 1;
+    for (let i = 0; i < iterations; i++) {
+        x = (x * 6364136223846793005 + 1442695040888963407) >>> 0;
+    }
+    return x;
+}
+
+function render() {
+    os.window.drawRect(winId, 0, 0, W, H, 10, 10, 20);
+    os.window.drawString(winId, "Stress Test — Preemption Demo", 10, 20, 255, 255, 100);
+    os.window.drawString(winId, "Spins: " + spinCount, 10, 50, 200, 255, 200);
+    os.window.drawString(winId, "Each spin: ~5M iterations of tight arithmetic", 10, 75, 160, 160, 200);
+    os.window.drawString(winId, "Cursor/taskbar should remain responsive", 10, 100, 160, 200, 160);
+    os.window.drawString(winId, "Press Q or Escape to quit", 10, H - 20, 150, 150, 150);
+    os.window.flush(winId);
+}
+
+globalThis.__fireTimer = function(id) {
+    if (id === "spin") {
+        spinBusy(5000000);
+        spinCount++;
+        render();
+        os._setTimeout(PID, "spin", "50");
+    }
+};
+
+globalThis.on_key = function(c) {
+    if (c === 113 || c === 81 || c === 27) { os.exit(); }
+};
+
+globalThis.on_ipc = function(msg) {
+    try {
+        const p = JSON.parse(msg);
+        if (p.type === "KEY") globalThis.on_key(p.charCode);
+        else if (p.type === "RENDER") render();
+    } catch(e) {}
+};
+
+render();
+os._setTimeout(PID, "spin", "100");
