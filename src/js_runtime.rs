@@ -740,6 +740,19 @@ impl QuickJsSandbox {
                 }
                 JS_FreeValue(ctx, v);
             }
+            // globals_date: Date polyfill backed by os.rtc() and os.uptime()
+            {
+                let src = include_str!("js/globals_date.js");
+                let c_src = js_cstring(src);
+                let fname = js_cstring("<globals_date>");
+                let v = JS_Eval(ctx, c_src.as_ptr() as *const c_char, c_src.len() - 1, fname.as_ptr() as *const c_char, JS_EVAL_TYPE_GLOBAL);
+                if js_is_exception(v) {
+                    let ex = JS_GetException(ctx);
+                    crate::serial_println!("[QuickJS] globals_date error: {}", js_to_rust_string(ctx, ex));
+                    JS_FreeValue(ctx, ex);
+                }
+                JS_FreeValue(ctx, v);
+            }
             // globals_console_url: console extensions, URL, URLSearchParams
             {
                 let src = include_str!("js/globals_console_url.js");
