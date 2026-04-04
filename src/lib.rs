@@ -34,7 +34,7 @@ pub mod storage;
 pub mod xhci;
 pub mod image;
 pub mod iommu;
-
+pub mod canvas;
 
 use core::panic::PanicInfo;
 

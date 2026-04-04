@@ -62,6 +62,7 @@ extern "C" {
     fn JS_ToCStringLen2(ctx: *mut JSContext, len: *mut usize, val: JSValue, cesu8: c_int) -> *const c_char;
     fn JS_FreeCString(ctx: *mut JSContext, ptr: *const c_char);
     fn JS_ToInt32(ctx: *mut JSContext, pres: *mut i32, val: JSValue) -> c_int;
+    fn JS_ToFloat64(ctx: *mut JSContext, pres: *mut f64, val: JSValue) -> c_int;
 
     fn JS_GetException(ctx: *mut JSContext) -> JSValue;
 
@@ -95,6 +96,11 @@ fn js_int(v: i32) -> JSValue {
     JSValue { u: v as u64, tag: JS_TAG_INT }
 }
 
+fn js_float(v: f64) -> JSValue {
+    // JS_TAG_FLOAT64 = 8 in QuickJS-NG (non-NaN-boxing 64-bit layout)
+    JSValue { u: v.to_bits(), tag: 8 }
+}
+
 fn js_is_exception(v: JSValue) -> bool {
     v.tag == JS_TAG_EXCEPTION
 }
@@ -117,6 +123,40 @@ unsafe fn js_val_to_i32(ctx: *mut JSContext, val: JSValue) -> i32 {
     result
 }
 
+unsafe fn js_val_to_f64(ctx: *mut JSContext, val: JSValue) -> f64 {
+    let mut result: f64 = 0.0;
+    JS_ToFloat64(ctx, &mut result, val);
+    result
+}
+
+unsafe fn js_str(ctx: *mut JSContext, s: &str) -> JSValue {
+    JS_NewStringLen(ctx, s.as_ptr() as *const c_char, s.len())
+}
+
+unsafe fn read_str_prop(ctx: *mut JSContext, obj: JSValue, key: &str) -> String {
+    let ckey = js_cstring(key);
+    let val = JS_GetPropertyStr(ctx, obj, ckey.as_ptr() as *const c_char);
+    let s = js_to_rust_string(ctx, val);
+    JS_FreeValue(ctx, val);
+    s
+}
+
+unsafe fn read_f64_prop(ctx: *mut JSContext, obj: JSValue, key: &str) -> f64 {
+    let ckey = js_cstring(key);
+    let val = JS_GetPropertyStr(ctx, obj, ckey.as_ptr() as *const c_char);
+    let f = js_val_to_f64(ctx, val);
+    JS_FreeValue(ctx, val);
+    f
+}
+
+/// Read `this._id` from a canvas context JS object to get the win_id.
+unsafe fn read_ctx_id(ctx: *mut JSContext, this_val: JSValue) -> u32 {
+    let ckey = js_cstring("_id");
+    let val = JS_GetPropertyStr(ctx, this_val, ckey.as_ptr() as *const c_char);
+    let id = js_val_to_i32(ctx, val) as u32;
+    JS_FreeValue(ctx, val);
+    id
+}
 
 unsafe fn js_cstring(s: &str) -> Vec<u8> {
     let mut v: Vec<u8> = Vec::with_capacity(s.len() + 1);
@@ -205,6 +245,7 @@ lazy_static! {
         m.insert("drawtest.jsos".to_string(), include_str!("jsos/drawtest.jsos").to_string());
         m.insert("calculator.jsos".to_string(), include_str!("jsos/calculator.jsos").to_string());
         m.insert("imageview.jsos".to_string(), include_str!("jsos/imageview.jsos").to_string());
+        m.insert("canvastest.jsos".to_string(), include_str!("jsos/canvastest.jsos").to_string());
         Mutex::new(m)
     };
     static ref CLIPBOARD: Mutex<String> = Mutex::new(String::new());
@@ -232,6 +273,8 @@ pub struct WindowBuffer {
 
 lazy_static! {
     pub static ref WINDOW_BUFFERS: Mutex<BTreeMap<u32, WindowBuffer>> = Mutex::new(BTreeMap::new());
+    pub static ref CANVAS_CONTEXTS: Mutex<BTreeMap<u32, crate::canvas::CanvasContext>> =
+        Mutex::new(BTreeMap::new());
     static ref NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
     static ref NEXT_Z_INDEX: spin::Mutex<u32> = spin::Mutex::new(1);
 }
@@ -466,23 +509,31 @@ pub fn process_has_timers(pid: u32) -> bool {
 
 /// Cleans up all resources (windows, timers) owned by a specific PID.
 pub fn cleanup_process_resources(pid: u32) {
-    // 1. Remove windows
-    {
+    // 1. Remove windows and collect their IDs for canvas cleanup
+    let removed_win_ids: Vec<u32> = {
         let mut buffers = WINDOW_BUFFERS.lock();
         let keys_to_remove: Vec<u32> = buffers.iter()
             .filter(|(_, win)| win.owner_pid == pid)
             .map(|(id, _)| *id)
             .collect();
-            
-        for id in keys_to_remove {
-            buffers.remove(&id);
+        for id in &keys_to_remove {
+            buffers.remove(id);
         }
-    }
-    
+        keys_to_remove
+    };
+
     // 2. Remove timers
     {
         let mut queue = TIMER_QUEUE.lock();
         queue.retain(|entry| entry.pid != pid);
+    }
+
+    // 3. Remove canvas contexts for this process's windows
+    {
+        let mut ctxs = CANVAS_CONTEXTS.lock();
+        for id in removed_win_ids {
+            ctxs.remove(&id);
+        }
     }
 }
 
@@ -786,7 +837,8 @@ unsafe fn register_os_namespace(ctx: *mut JSContext) {
     set_func(ctx, window, "list", js_os_window_list, 0);
     set_func(ctx, window, "move", js_os_window_move, 3);
     set_func(ctx, window, "setZIndex", js_os_window_set_z_index, 2);
-    
+    set_func(ctx, window, "getContext", js_os_window_get_context, 1);
+
     // Build os.mouse sub-object
     let mouse = JS_NewObject(ctx);
     set_func(ctx, mouse, "scroll", js_os_mouse_scroll, 0);
@@ -1576,6 +1628,599 @@ unsafe extern "C" fn js_os_window_set_z_index(ctx: *mut JSContext, _this: JSValu
     let z      = js_val_to_i32(ctx, *argv.offset(1)) as u32;
     if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
         win.z_index = z;
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_os_window_get_context(
+    ctx: *mut JSContext, _this: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 1 { return js_undefined(); }
+    let win_id = js_val_to_i32(ctx, *argv.offset(0)) as u32;
+
+    // Create CanvasContext for this window if not yet created
+    {
+        let mut ctxs = CANVAS_CONTEXTS.lock();
+        if !ctxs.contains_key(&win_id) {
+            ctxs.insert(win_id, crate::canvas::CanvasContext::new(win_id));
+        }
+    }
+    // Mark pixel buffer active so flush() will blit
+    if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+        win.pixel_buffer_active = true;
+    }
+
+    // Build the JS context object
+    let obj = JS_NewObject(ctx);
+    set_prop_obj(ctx, obj, "_id",         js_int(win_id as i32));
+    set_prop_obj(ctx, obj, "fillStyle",   js_str(ctx, "#000000"));
+    set_prop_obj(ctx, obj, "strokeStyle", js_str(ctx, "#000000"));
+    set_prop_obj(ctx, obj, "lineWidth",   js_float(1.0));
+    set_prop_obj(ctx, obj, "font",        js_str(ctx, "16px monospace"));
+
+    set_func(ctx, obj, "fillRect",           js_canvas_fill_rect,           4);
+    set_func(ctx, obj, "strokeRect",         js_canvas_stroke_rect,         4);
+    set_func(ctx, obj, "clearRect",          js_canvas_clear_rect,          4);
+    set_func(ctx, obj, "beginPath",          js_canvas_begin_path,          0);
+    set_func(ctx, obj, "moveTo",             js_canvas_move_to,             2);
+    set_func(ctx, obj, "lineTo",             js_canvas_line_to,             2);
+    set_func(ctx, obj, "arc",                js_canvas_arc,                 5);
+    set_func(ctx, obj, "bezierCurveTo",      js_canvas_bezier_curve_to,     6);
+    set_func(ctx, obj, "quadraticCurveTo",   js_canvas_quadratic_curve_to,  4);
+    set_func(ctx, obj, "rect",               js_canvas_rect_path,           4);
+    set_func(ctx, obj, "closePath",          js_canvas_close_path,          0);
+    set_func(ctx, obj, "fill",               js_canvas_fill,                0);
+    set_func(ctx, obj, "stroke",             js_canvas_stroke,              0);
+    set_func(ctx, obj, "fillText",           js_canvas_fill_text,           3);
+    set_func(ctx, obj, "strokeText",         js_canvas_stroke_text,         3);
+    set_func(ctx, obj, "drawImage",          js_canvas_draw_image,          3);
+    set_func(ctx, obj, "getImageData",       js_canvas_get_image_data,      4);
+    set_func(ctx, obj, "putImageData",       js_canvas_put_image_data,      3);
+    set_func(ctx, obj, "save",               js_canvas_save,                0);
+    set_func(ctx, obj, "restore",            js_canvas_restore,             0);
+    set_func(ctx, obj, "translate",          js_canvas_translate,           2);
+    set_func(ctx, obj, "rotate",             js_canvas_rotate,              1);
+    set_func(ctx, obj, "scale",              js_canvas_scale,               2);
+    set_func(ctx, obj, "setTransform",       js_canvas_set_transform,       6);
+    set_func(ctx, obj, "resetTransform",     js_canvas_reset_transform,     0);
+    set_func(ctx, obj, "flush",              js_canvas_flush,               0);
+    obj
+}
+
+unsafe extern "C" fn js_canvas_fill_rect(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 4 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let x = js_val_to_f64(ctx, *argv.offset(0));
+    let y = js_val_to_f64(ctx, *argv.offset(1));
+    let w = js_val_to_f64(ctx, *argv.offset(2));
+    let h = js_val_to_f64(ctx, *argv.offset(3));
+    let style = read_str_prop(ctx, this_val, "fillStyle");
+    let color = crate::canvas::parse_css_color(&style);
+    let transform = { CANVAS_CONTEXTS.lock().get(&win_id).map(|c| c.transform) };
+    if let Some(t) = transform {
+        if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+            crate::canvas::fill_rect_buf(&mut win.pixels, win.width, win.height, x, y, w, h, color, &t);
+        }
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_stroke_rect(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 4 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let x = js_val_to_f64(ctx, *argv.offset(0));
+    let y = js_val_to_f64(ctx, *argv.offset(1));
+    let w = js_val_to_f64(ctx, *argv.offset(2));
+    let h = js_val_to_f64(ctx, *argv.offset(3));
+    let style = read_str_prop(ctx, this_val, "strokeStyle");
+    let lw    = read_f64_prop(ctx, this_val, "lineWidth");
+    let color = crate::canvas::parse_css_color(&style);
+    let transform = { CANVAS_CONTEXTS.lock().get(&win_id).map(|c| c.transform) };
+    if let Some(t) = transform {
+        if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+            crate::canvas::stroke_rect_buf(&mut win.pixels, win.width, win.height, x, y, w, h, color, lw, &t);
+        }
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_clear_rect(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 4 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let x = js_val_to_f64(ctx, *argv.offset(0));
+    let y = js_val_to_f64(ctx, *argv.offset(1));
+    let w = js_val_to_f64(ctx, *argv.offset(2));
+    let h = js_val_to_f64(ctx, *argv.offset(3));
+    if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+        crate::canvas::clear_rect_buf(&mut win.pixels, win.width, win.height, x, y, w, h);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_begin_path(
+    _ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(_ctx, this_val);
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.path.clear();
+        c.current_pos = (0.0, 0.0);
+        c.subpath_start = (0.0, 0.0);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_move_to(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 2 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let x = js_val_to_f64(ctx, *argv.offset(0));
+    let y = js_val_to_f64(ctx, *argv.offset(1));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.path.push(crate::canvas::PathCmd::MoveTo(x, y));
+        c.current_pos = (x, y);
+        c.subpath_start = (x, y);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_line_to(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 2 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let x = js_val_to_f64(ctx, *argv.offset(0));
+    let y = js_val_to_f64(ctx, *argv.offset(1));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.path.push(crate::canvas::PathCmd::LineTo(x, y));
+        c.current_pos = (x, y);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_arc(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 5 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let cx    = js_val_to_f64(ctx, *argv.offset(0));
+    let cy    = js_val_to_f64(ctx, *argv.offset(1));
+    let r     = js_val_to_f64(ctx, *argv.offset(2));
+    let start = js_val_to_f64(ctx, *argv.offset(3));
+    let end   = js_val_to_f64(ctx, *argv.offset(4));
+    let ccw   = argc >= 6 && js_val_to_i32(ctx, *argv.offset(5)) != 0;
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.path.push(crate::canvas::PathCmd::Arc { cx, cy, r, start, end, ccw });
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_bezier_curve_to(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 6 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let cp1x = js_val_to_f64(ctx, *argv.offset(0));
+    let cp1y = js_val_to_f64(ctx, *argv.offset(1));
+    let cp2x = js_val_to_f64(ctx, *argv.offset(2));
+    let cp2y = js_val_to_f64(ctx, *argv.offset(3));
+    let x    = js_val_to_f64(ctx, *argv.offset(4));
+    let y    = js_val_to_f64(ctx, *argv.offset(5));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.path.push(crate::canvas::PathCmd::BezierCurveTo { cp1x, cp1y, cp2x, cp2y, x, y });
+        c.current_pos = (x, y);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_quadratic_curve_to(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 4 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let cpx = js_val_to_f64(ctx, *argv.offset(0));
+    let cpy = js_val_to_f64(ctx, *argv.offset(1));
+    let x   = js_val_to_f64(ctx, *argv.offset(2));
+    let y   = js_val_to_f64(ctx, *argv.offset(3));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.path.push(crate::canvas::PathCmd::QuadraticCurveTo { cpx, cpy, x, y });
+        c.current_pos = (x, y);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_rect_path(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 4 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let x = js_val_to_f64(ctx, *argv.offset(0));
+    let y = js_val_to_f64(ctx, *argv.offset(1));
+    let w = js_val_to_f64(ctx, *argv.offset(2));
+    let h = js_val_to_f64(ctx, *argv.offset(3));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.path.push(crate::canvas::PathCmd::MoveTo(x, y));
+        c.path.push(crate::canvas::PathCmd::Rect(x, y, w, h));
+        c.current_pos = (x, y);
+        c.subpath_start = (x, y);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_close_path(
+    _ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(_ctx, this_val);
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.path.push(crate::canvas::PathCmd::ClosePath);
+        c.current_pos = c.subpath_start;
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_fill(
+    ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(ctx, this_val);
+    let style = read_str_prop(ctx, this_val, "fillStyle");
+    let color = crate::canvas::parse_css_color(&style);
+    let (path, transform) = {
+        let ctxs = CANVAS_CONTEXTS.lock();
+        match ctxs.get(&win_id) {
+            Some(c) => (c.path.clone(), c.transform),
+            None => return js_undefined(),
+        }
+    };
+    if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+        crate::canvas::fill_path(&mut win.pixels, win.width, win.height, &path, &transform, color);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_stroke(
+    ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(ctx, this_val);
+    let style = read_str_prop(ctx, this_val, "strokeStyle");
+    let lw    = read_f64_prop(ctx, this_val, "lineWidth");
+    let color = crate::canvas::parse_css_color(&style);
+    let (path, transform) = {
+        let ctxs = CANVAS_CONTEXTS.lock();
+        match ctxs.get(&win_id) {
+            Some(c) => (c.path.clone(), c.transform),
+            None => return js_undefined(),
+        }
+    };
+    if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+        crate::canvas::stroke_path(&mut win.pixels, win.width, win.height, &path, &transform, color, lw);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_fill_text(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 3 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let text  = js_to_rust_string(ctx, *argv.offset(0));
+    let x     = js_val_to_f64(ctx, *argv.offset(1)) as i32;
+    let y     = js_val_to_f64(ctx, *argv.offset(2)) as i32;
+    let style = read_str_prop(ctx, this_val, "fillStyle");
+    let font  = read_str_prop(ctx, this_val, "font");
+    let (r, g, b) = crate::canvas::parse_css_color(&style);
+    // Parse font size: "16px monospace" → extract number before "px"
+    let large = font.split("px").next()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .map(|size| size >= 16.0)
+        .unwrap_or(false);
+    let transform = { CANVAS_CONTEXTS.lock().get(&win_id).map(|c| c.transform) };
+    if let Some(t) = transform {
+        let (tx, ty) = crate::canvas::transform_point(&t, x as f64, y as f64);
+        if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+            crate::framebuffer::draw_string_to_buffer(
+                &mut win.pixels, win.width, win.height,
+                &text, tx as i32, ty as i32, r, g, b, large,
+            );
+        }
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_stroke_text(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    // strokeText is the same as fillText for JSOS (no separate outline rendering)
+    js_canvas_fill_text(ctx, this_val, argc, argv)
+}
+
+/// drawImage(img, dx, dy)
+/// drawImage(img, dx, dy, dw, dh)
+/// drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh)
+/// `img` = { width: number, height: number, data: ArrayBuffer }
+unsafe extern "C" fn js_canvas_draw_image(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 3 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let img = *argv.offset(0);
+
+    // Read img.width, img.height, img.data
+    let cw = js_cstring("width");  let img_w_val = JS_GetPropertyStr(ctx, img, cw.as_ptr() as *const c_char);
+    let ch = js_cstring("height"); let img_h_val = JS_GetPropertyStr(ctx, img, ch.as_ptr() as *const c_char);
+    let cd = js_cstring("data");   let data_val  = JS_GetPropertyStr(ctx, img, cd.as_ptr() as *const c_char);
+    let img_w = js_val_to_i32(ctx, img_w_val) as usize;
+    let img_h = js_val_to_i32(ctx, img_h_val) as usize;
+    JS_FreeValue(ctx, img_w_val);
+    JS_FreeValue(ctx, img_h_val);
+
+    let mut data_size: usize = 0;
+    let data_ptr = JS_GetArrayBuffer(ctx, &mut data_size, data_val);
+    JS_FreeValue(ctx, data_val);
+    if data_ptr.is_null() || img_w == 0 || img_h == 0 { return js_undefined(); }
+    let src = core::slice::from_raw_parts(data_ptr as *const u32, img_w * img_h);
+
+    let (sx, sy, sw, sh, dx, dy, dw, dh) = if argc >= 9 {
+        (
+            js_val_to_f64(ctx, *argv.offset(1)) as usize,
+            js_val_to_f64(ctx, *argv.offset(2)) as usize,
+            js_val_to_f64(ctx, *argv.offset(3)) as usize,
+            js_val_to_f64(ctx, *argv.offset(4)) as usize,
+            js_val_to_f64(ctx, *argv.offset(5)) as i32,
+            js_val_to_f64(ctx, *argv.offset(6)) as i32,
+            js_val_to_f64(ctx, *argv.offset(7)) as usize,
+            js_val_to_f64(ctx, *argv.offset(8)) as usize,
+        )
+    } else if argc >= 5 {
+        (0, 0, img_w, img_h,
+            js_val_to_f64(ctx, *argv.offset(1)) as i32,
+            js_val_to_f64(ctx, *argv.offset(2)) as i32,
+            js_val_to_f64(ctx, *argv.offset(3)) as usize,
+            js_val_to_f64(ctx, *argv.offset(4)) as usize,
+        )
+    } else {
+        (0, 0, img_w, img_h,
+            js_val_to_f64(ctx, *argv.offset(1)) as i32,
+            js_val_to_f64(ctx, *argv.offset(2)) as i32,
+            img_w, img_h,
+        )
+    };
+
+    if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+        crate::canvas::blit_image(
+            &mut win.pixels, win.width, win.height,
+            src, img_w, img_h,
+            sx, sy, sw, sh,
+            dx, dy, dw, dh,
+        );
+    }
+    js_undefined()
+}
+
+/// getImageData(x, y, w, h) → { width, height, data: ArrayBuffer (RGBA u8×4) }
+unsafe extern "C" fn js_canvas_get_image_data(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 4 { return js_null(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let x  = js_val_to_f64(ctx, *argv.offset(0)) as i32;
+    let y  = js_val_to_f64(ctx, *argv.offset(1)) as i32;
+    let rw = js_val_to_f64(ctx, *argv.offset(2)) as usize;
+    let rh = js_val_to_f64(ctx, *argv.offset(3)) as usize;
+    if rw == 0 || rh == 0 { return js_null(); }
+
+    let rgba_data: Vec<u8> = {
+        let buffers = WINDOW_BUFFERS.lock();
+        match buffers.get(&win_id) {
+            None => return js_null(),
+            Some(win) => {
+                let mut out = Vec::with_capacity(rw * rh * 4);
+                for row in 0..rh {
+                    let src_y_raw = y + row as i32;
+                    for col in 0..rw {
+                        let src_x_raw = x + col as i32;
+                        let px = if src_x_raw >= 0 && src_y_raw >= 0
+                            && (src_x_raw as usize) < win.width
+                            && (src_y_raw as usize) < win.height {
+                            win.pixels[src_y_raw as usize * win.width + src_x_raw as usize]
+                        } else { 0 };
+                        out.push(((px >> 16) & 0xFF) as u8); // R
+                        out.push(((px >>  8) & 0xFF) as u8); // G
+                        out.push(( px        & 0xFF) as u8); // B
+                        out.push(255u8);                     // A
+                    }
+                }
+                out
+            }
+        }
+    };
+
+    let byte_len = rgba_data.len();
+    let raw = rgba_data.as_ptr() as *mut u8;
+    core::mem::forget(rgba_data);
+
+    unsafe extern "C" fn free_rgba(_rt: *mut JSRuntime, opaque: *mut c_void, ptr: *mut c_void) {
+        let count = opaque as usize;
+        drop(Vec::from_raw_parts(ptr as *mut u8, count, count));
+    }
+
+    let data_ab = JS_NewArrayBuffer(ctx, raw, byte_len, Some(free_rgba), byte_len as *mut c_void, false);
+    let result = JS_NewObject(ctx);
+    set_prop_obj(ctx, result, "width",  js_int(rw as i32));
+    set_prop_obj(ctx, result, "height", js_int(rh as i32));
+    set_prop_obj(ctx, result, "data",   data_ab);
+    result
+}
+
+/// putImageData(imageData, dx, dy)  — imageData = { width, height, data: ArrayBuffer (RGBA u8×4) }
+unsafe extern "C" fn js_canvas_put_image_data(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 3 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let img_data = *argv.offset(0);
+    let dx = js_val_to_f64(ctx, *argv.offset(1)) as i32;
+    let dy = js_val_to_f64(ctx, *argv.offset(2)) as i32;
+
+    let cw = js_cstring("width");  let w_val = JS_GetPropertyStr(ctx, img_data, cw.as_ptr() as *const c_char);
+    let ch = js_cstring("height"); let h_val = JS_GetPropertyStr(ctx, img_data, ch.as_ptr() as *const c_char);
+    let cd = js_cstring("data");   let d_val = JS_GetPropertyStr(ctx, img_data, cd.as_ptr() as *const c_char);
+    let iw = js_val_to_i32(ctx, w_val) as usize;
+    let ih = js_val_to_i32(ctx, h_val) as usize;
+    JS_FreeValue(ctx, w_val);
+    JS_FreeValue(ctx, h_val);
+
+    let mut data_size: usize = 0;
+    let data_ptr = JS_GetArrayBuffer(ctx, &mut data_size, d_val);
+    JS_FreeValue(ctx, d_val);
+    if data_ptr.is_null() { return js_undefined(); }
+    let rgba = core::slice::from_raw_parts(data_ptr as *const u8, data_size);
+
+    if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+        for row in 0..ih {
+            let dst_y = dy + row as i32;
+            if dst_y < 0 || dst_y >= win.height as i32 { continue; }
+            for col in 0..iw {
+                let dst_x = dx + col as i32;
+                if dst_x < 0 || dst_x >= win.width as i32 { continue; }
+                let i = (row * iw + col) * 4;
+                if i + 3 >= rgba.len() { break; }
+                let r = rgba[i] as u32;
+                let g = rgba[i+1] as u32;
+                let b = rgba[i+2] as u32;
+                win.pixels[dst_y as usize * win.width + dst_x as usize] =
+                    (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_save(
+    ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(ctx, this_val);
+    let fill_style   = read_str_prop(ctx, this_val, "fillStyle");
+    let stroke_style = read_str_prop(ctx, this_val, "strokeStyle");
+    let line_width   = read_f64_prop(ctx, this_val, "lineWidth");
+    let font         = read_str_prop(ctx, this_val, "font");
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.state_stack.push(crate::canvas::CanvasState {
+            fill_style, stroke_style, line_width, font, transform: c.transform,
+        });
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_restore(
+    ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(ctx, this_val);
+    let state = {
+        let mut ctxs = CANVAS_CONTEXTS.lock();
+        ctxs.get_mut(&win_id).and_then(|c| {
+            let s = c.state_stack.pop();
+            if let Some(ref st) = s { c.transform = st.transform; }
+            s
+        })
+    };
+    if let Some(s) = state {
+        set_prop_obj(ctx, this_val, "fillStyle",   js_str(ctx, &s.fill_style));
+        set_prop_obj(ctx, this_val, "strokeStyle", js_str(ctx, &s.stroke_style));
+        set_prop_obj(ctx, this_val, "lineWidth",   js_float(s.line_width));
+        set_prop_obj(ctx, this_val, "font",        js_str(ctx, &s.font));
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_translate(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 2 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let tx = js_val_to_f64(ctx, *argv.offset(0));
+    let ty = js_val_to_f64(ctx, *argv.offset(1));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        let t = [1.0, 0.0, 0.0, 1.0, tx, ty];
+        c.transform = crate::canvas::multiply_transform(&t, &c.transform);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_rotate(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 1 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let angle = js_val_to_f64(ctx, *argv.offset(0));
+    let cos_a = libm::cos(angle);
+    let sin_a = libm::sin(angle);
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        let rot = [cos_a, sin_a, -sin_a, cos_a, 0.0, 0.0];
+        c.transform = crate::canvas::multiply_transform(&rot, &c.transform);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_scale(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 2 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let sx = js_val_to_f64(ctx, *argv.offset(0));
+    let sy = js_val_to_f64(ctx, *argv.offset(1));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        let s = [sx, 0.0, 0.0, sy, 0.0, 0.0];
+        c.transform = crate::canvas::multiply_transform(&s, &c.transform);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_set_transform(
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 6 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let a = js_val_to_f64(ctx, *argv.offset(0));
+    let b = js_val_to_f64(ctx, *argv.offset(1));
+    let c_ = js_val_to_f64(ctx, *argv.offset(2));
+    let d = js_val_to_f64(ctx, *argv.offset(3));
+    let e = js_val_to_f64(ctx, *argv.offset(4));
+    let f = js_val_to_f64(ctx, *argv.offset(5));
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.transform = [a, b, c_, d, e, f];
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_canvas_reset_transform(
+    ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(ctx, this_val);
+    if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
+        c.transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    }
+    js_undefined()
+}
+
+/// ctx.flush() — blit the window pixel buffer to the framebuffer.
+unsafe extern "C" fn js_canvas_flush(
+    ctx: *mut JSContext, this_val: JSValue, _argc: c_int, _argv: *const JSValue,
+) -> JSValue {
+    let win_id = read_ctx_id(ctx, this_val);
+    let blit_args = {
+        let buffers = WINDOW_BUFFERS.lock();
+        buffers.get(&win_id)
+            .filter(|win| win.pixel_buffer_active)
+            .map(|win| (win.x, win.y, win.width, win.height, win.pixels.clone()))
+    };
+    if let Some((x, y, w, h, pixels)) = blit_args {
+        crate::framebuffer::blit_window_pixels(x, y, w, h, &pixels);
     }
     js_undefined()
 }

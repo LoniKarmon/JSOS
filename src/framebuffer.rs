@@ -397,6 +397,65 @@ impl OriginDimensions for FramebufferWriter {
     }
 }
 
+/// An `embedded_graphics` draw target backed by a `&mut [u32]` pixel buffer (ARGB 0x00RRGGBB).
+/// Used by the Canvas 2D text rendering path.
+pub struct PixelBufDrawTarget<'a> {
+    pub buf: &'a mut [u32],
+    pub width: usize,
+    pub height: usize,
+}
+
+impl<'a> DrawTarget for PixelBufDrawTarget<'a> {
+    type Color = Rgb888;
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        for Pixel(coord, color) in pixels.into_iter() {
+            let x = coord.x;
+            let y = coord.y;
+            if x < 0 || y < 0 || x as usize >= self.width || y as usize >= self.height {
+                continue;
+            }
+            let idx = y as usize * self.width + x as usize;
+            self.buf[idx] = ((color.r() as u32) << 16)
+                          | ((color.g() as u32) << 8)
+                          |  (color.b() as u32);
+        }
+        Ok(())
+    }
+}
+
+impl<'a> OriginDimensions for PixelBufDrawTarget<'a> {
+    fn size(&self) -> Size {
+        Size::new(self.width as u32, self.height as u32)
+    }
+}
+
+/// Render ASCII text into a pixel buffer using the same u8g2 bitmap fonts as `draw_string_sized`.
+/// `(x, y)` is the text baseline position.
+pub fn draw_string_to_buffer(
+    buf: &mut [u32], buf_w: usize, buf_h: usize,
+    text: &str, x: i32, y: i32,
+    r: u8, g: u8, b: u8,
+    large: bool,
+) {
+    use embedded_graphics::text::Text;
+    use u8g2_fonts::{fonts, U8g2TextStyle};
+
+    let fg = Rgb888::new(r, g, b);
+    let mut target = PixelBufDrawTarget { buf, width: buf_w, height: buf_h };
+    if large {
+        let font = U8g2TextStyle::new(fonts::u8g2_font_10x20_tf, fg);
+        let _ = Text::new(text, Point::new(x, y), font).draw(&mut target);
+    } else {
+        let font = U8g2TextStyle::new(fonts::u8g2_font_unifont_t_hebrew, fg);
+        let _ = Text::new(text, Point::new(x, y), font).draw(&mut target);
+    }
+}
+
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => ($crate::framebuffer::_print(format_args!($($arg)*)));
