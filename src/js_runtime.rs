@@ -1847,6 +1847,8 @@ unsafe extern "C" fn js_canvas_rect_path(
     if let Some(c) = CANVAS_CONTEXTS.lock().get_mut(&win_id) {
         c.path.push(crate::canvas::PathCmd::MoveTo(x, y));
         c.path.push(crate::canvas::PathCmd::Rect(x, y, w, h));
+        c.current_pos = (x, y);
+        c.subpath_start = (x, y);
     }
     js_undefined()
 }
@@ -2019,11 +2021,13 @@ unsafe extern "C" fn js_canvas_get_image_data(
             Some(win) => {
                 let mut out = Vec::with_capacity(rw * rh * 4);
                 for row in 0..rh {
-                    let src_y = (y + row as i32).max(0) as usize;
+                    let src_y_raw = y + row as i32;
                     for col in 0..rw {
-                        let src_x = (x + col as i32).max(0) as usize;
-                        let px = if src_x < win.width && src_y < win.height {
-                            win.pixels[src_y * win.width + src_x]
+                        let src_x_raw = x + col as i32;
+                        let px = if src_x_raw >= 0 && src_y_raw >= 0
+                            && (src_x_raw as usize) < win.width
+                            && (src_y_raw as usize) < win.height {
+                            win.pixels[src_y_raw as usize * win.width + src_x_raw as usize]
                         } else { 0 };
                         out.push(((px >> 16) & 0xFF) as u8); // R
                         out.push(((px >>  8) & 0xFF) as u8); // G
