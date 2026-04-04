@@ -1,10 +1,10 @@
 // demo_browser.jsos – HTML/CSS browser demo for JSOS
 // Uses: dom.js, css.js, layout.js, paint.js
 
-const dom    = require('dom');
-const css    = require('css');
-const layout = require('layout');
-const paint  = require('paint');
+import dom    from 'dom';
+import css    from 'css';
+import layout from 'layout';
+import paint  from 'paint';
 
 // ── Window ────────────────────────────────────────────────────────────────────
 const W = 680, H = 520;
