@@ -256,3 +256,114 @@ pub fn scanline_fill(
         }
     }
 }
+
+/// Convert an arc to a list of (x, y) points (polyline approximation).
+fn arc_to_points(cx: f64, cy: f64, r: f64, start: f64, end: f64, ccw: bool) -> Vec<(f64, f64)> {
+    const PI2: f64 = core::f64::consts::PI * 2.0;
+    let (s, e) = if ccw {
+        let mut e = end;
+        while e > start { e -= PI2; }
+        (start, e)
+    } else {
+        let mut e = end;
+        while e < start { e += PI2; }
+        (start, e)
+    };
+    let arc_len = libm::fabs(e - s);
+    let n = (libm::ceil(arc_len * r) as usize).max(8);
+    let step = (e - s) / n as f64;
+    (0..=n).map(|i| {
+        let a = s + i as f64 * step;
+        (cx + r * libm::cos(a), cy + r * libm::sin(a))
+    }).collect()
+}
+
+/// Recursive de Casteljau subdivision for a cubic Bézier.
+fn subdivide_bezier(
+    pts: &mut Vec<(f64, f64)>,
+    x0: f64, y0: f64,
+    cp1x: f64, cp1y: f64,
+    cp2x: f64, cp2y: f64,
+    x: f64, y: f64,
+    depth: usize,
+) {
+    if depth > 8 { pts.push((x, y)); return; }
+    let dx = x - x0;
+    let dy = y - y0;
+    let d1 = libm::fabs((cp1x - x0) * dy - (cp1y - y0) * dx);
+    let d2 = libm::fabs((cp2x - x0) * dy - (cp2y - y0) * dx);
+    if d1 + d2 < 1.0 { pts.push((x, y)); return; }
+    let mx01   = (x0   + cp1x) * 0.5; let my01   = (y0   + cp1y) * 0.5;
+    let mx12   = (cp1x + cp2x) * 0.5; let my12   = (cp1y + cp2y) * 0.5;
+    let mx23   = (cp2x + x   ) * 0.5; let my23   = (cp2y + y   ) * 0.5;
+    let mx012  = (mx01  + mx12 ) * 0.5; let my012  = (my01  + my12 ) * 0.5;
+    let mx123  = (mx12  + mx23 ) * 0.5; let my123  = (my12  + my23 ) * 0.5;
+    let mx     = (mx012 + mx123) * 0.5; let my     = (my012 + my123) * 0.5;
+    subdivide_bezier(pts, x0, y0, mx01, my01, mx012, my012, mx, my, depth + 1);
+    subdivide_bezier(pts, mx, my, mx123, my123, mx23, my23, x, y, depth + 1);
+}
+
+/// Flatten a path to line segments `(x0,y0,x1,y1)` in path-space (before transform).
+pub fn flatten_path(path: &[PathCmd]) -> Vec<(f64, f64, f64, f64)> {
+    let mut segs = Vec::new();
+    let mut cx = 0.0_f64;
+    let mut cy = 0.0_f64;
+    let mut sx = 0.0_f64;
+    let mut sy = 0.0_f64;
+
+    for cmd in path {
+        match cmd {
+            PathCmd::MoveTo(x, y) => { cx = *x; cy = *y; sx = *x; sy = *y; }
+            PathCmd::LineTo(x, y) => {
+                segs.push((cx, cy, *x, *y));
+                cx = *x; cy = *y;
+            }
+            PathCmd::Arc { cx: acx, cy: acy, r, start, end, ccw } => {
+                let pts = arc_to_points(*acx, *acy, *r, *start, *end, *ccw);
+                if let Some(&(ax0, ay0)) = pts.first() {
+                    if libm::fabs(cx - ax0) > 0.01 || libm::fabs(cy - ay0) > 0.01 {
+                        segs.push((cx, cy, ax0, ay0));
+                    }
+                }
+                for w in pts.windows(2) {
+                    segs.push((w[0].0, w[0].1, w[1].0, w[1].1));
+                }
+                if let Some(&(lx, ly)) = pts.last() { cx = lx; cy = ly; }
+            }
+            PathCmd::BezierCurveTo { cp1x, cp1y, cp2x, cp2y, x, y } => {
+                let mut pts = alloc::vec![(cx, cy)];
+                subdivide_bezier(&mut pts, cx, cy, *cp1x, *cp1y, *cp2x, *cp2y, *x, *y, 0);
+                for w in pts.windows(2) {
+                    segs.push((w[0].0, w[0].1, w[1].0, w[1].1));
+                }
+                cx = *x; cy = *y;
+            }
+            PathCmd::QuadraticCurveTo { cpx, cpy, x, y } => {
+                let cp1x = cx + (2.0/3.0) * (cpx - cx);
+                let cp1y = cy + (2.0/3.0) * (cpy - cy);
+                let cp2x = x  + (2.0/3.0) * (cpx - x);
+                let cp2y = y  + (2.0/3.0) * (cpy - y);
+                let mut pts = alloc::vec![(cx, cy)];
+                subdivide_bezier(&mut pts, cx, cy, cp1x, cp1y, cp2x, cp2y, *x, *y, 0);
+                for w in pts.windows(2) {
+                    segs.push((w[0].0, w[0].1, w[1].0, w[1].1));
+                }
+                cx = *x; cy = *y;
+            }
+            PathCmd::Rect(x, y, w, h) => {
+                segs.push((*x,     *y,     x+w,   *y    ));
+                segs.push((x+w,   *y,     x+w,   y+h   ));
+                segs.push((x+w,   y+h,   *x,     y+h   ));
+                segs.push((*x,     y+h,   *x,     *y    ));
+                cx = *x; cy = *y;
+            }
+            PathCmd::ClosePath => {
+                if libm::fabs(cx - sx) > 0.01 || libm::fabs(cy - sy) > 0.01 {
+                    segs.push((cx, cy, sx, sy));
+                }
+                cx = sx; cy = sy;
+            }
+        }
+    }
+    segs
+}
