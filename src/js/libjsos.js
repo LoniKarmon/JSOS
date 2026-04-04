@@ -105,6 +105,8 @@ Window.prototype.clearInterval = function(id) {
     delete this._timers[id];
 };
 Window.prototype.installIpc = function(handlers) {
+    // Wire on_key so foreground key events (direct kernel dispatch) also work.
+    if (handlers.key) globalThis.on_key = handlers.key;
     globalThis.on_ipc = function(msg) {
         try {
             const p = JSON.parse(msg);
