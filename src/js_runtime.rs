@@ -495,7 +495,8 @@ pub fn poll_timers() {
                 "if (typeof globalThis.__fireTimer === 'function') {{ globalThis.__fireTimer('{}'); }}",
                 timer_id
             );
-            sandbox.start_timeslice();
+            // pid=1 is winman — system process, must never be preempted mid-render
+            if pid != 1 { sandbox.start_timeslice(); }
             match sandbox.eval(&script) {
                 Ok(_) => {}
                 Err(ref e) if e.contains(JS_INTERRUPT_MSG) => {
@@ -827,8 +828,10 @@ impl QuickJsSandbox {
 
     /// Enable preemption after initialization is complete. Called once after the
     /// initial app eval succeeds. Sets the real budget and resets the slice start.
+    /// Budget: 50 ticks = 500ms at 100 Hz — only catches true infinite loops,
+    /// never triggers on normal rendering or timer callbacks.
     pub fn enable_preemption(&mut self) {
-        self.timeslice.budget_ticks.store(3, Ordering::Relaxed);
+        self.timeslice.budget_ticks.store(50, Ordering::Relaxed);
         self.start_timeslice();
     }
 

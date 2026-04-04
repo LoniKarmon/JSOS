@@ -92,6 +92,117 @@ fn json_quote(s: &str) -> String {
     out
 }
 
+// ── ES module import transform ────────────────────────────────────────────
+
+/// Rewrite `import { A, B as b } from 'mod'` binding list to destructuring
+/// syntax: `A, B: b`.
+fn rewrite_bindings(inner: &str) -> String {
+    inner.split(',')
+        .map(|b| b.trim())
+        .filter(|b| !b.is_empty())
+        .map(|b| {
+            if let Some(pos) = b.find(" as ") {
+                alloc::format!("{}: {}", b[..pos].trim(), b[pos + 4..].trim())
+            } else {
+                b.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Try to rewrite a single `import …` statement (with the leading `import`
+/// keyword already stripped) into a CommonJS-compatible expression.
+fn rewrite_import_line(after_kw: &str) -> Option<String> {
+    // Side-effect: import 'X'  /  import "X"
+    let first = after_kw.chars().next()?;
+    if first == '\'' || first == '"' {
+        let module = after_kw.trim_matches(|c: char| c == '\'' || c == '"');
+        return Some(alloc::format!("require('{}');", module));
+    }
+
+    // All other forms require `from`
+    let from_pos = after_kw.rfind(" from ")?;
+    let bindings = after_kw[..from_pos].trim();
+    let module = after_kw[from_pos + 6..]
+        .trim()
+        .trim_matches(|c: char| c == '\'' || c == '"');
+
+    // Namespace: * as X
+    if let Some(ns) = bindings.strip_prefix("* as ") {
+        return Some(alloc::format!("const {} = require('{}');", ns.trim(), module));
+    }
+
+    // Named only: { A, B as b }
+    if bindings.starts_with('{') && bindings.ends_with('}') {
+        let inner = &bindings[1..bindings.len() - 1];
+        return Some(alloc::format!(
+            "const {{{}}} = require('{}');",
+            rewrite_bindings(inner),
+            module
+        ));
+    }
+
+    // Default + named: X, { A, B }
+    if let Some(brace) = bindings.find('{') {
+        let default_name = bindings[..bindings.find(',')?].trim();
+        let named_inner = &bindings[brace + 1..bindings.rfind('}').unwrap_or(bindings.len())];
+        return Some(alloc::format!(
+            "const __m = require('{}'); const {} = __m.default !== undefined ? __m.default : __m; const {{{}}} = __m;",
+            module,
+            default_name,
+            rewrite_bindings(named_inner)
+        ));
+    }
+
+    // Default only: import X from 'mod'
+    let name = bindings.trim();
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+    {
+        return Some(alloc::format!("const {} = require('{}');", name, module));
+    }
+
+    None
+}
+
+/// Transform ES-module `import` statements at the top level of `source` into
+/// CommonJS `require()` calls so that `.jsos` apps can use `import` syntax
+/// while the kernel continues to run them in `JS_EVAL_TYPE_GLOBAL` mode.
+///
+/// Only lines whose first non-whitespace token is the keyword `import`
+/// (followed by a space, `'`, or `"`) are touched; all other lines are copied
+/// verbatim.
+fn transform_imports(source: &str) -> String {
+    let mut out = String::with_capacity(source.len() + 64);
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let is_import = trimmed.starts_with("import ")
+            || trimmed.starts_with("import'")
+            || trimmed.starts_with("import\"");
+        if is_import {
+            // Strip trailing semicolon/whitespace before parsing
+            let stripped = trimmed
+                .strip_prefix("import")
+                .unwrap()
+                .trim_end_matches(|c: char| c == ';' || c.is_whitespace())
+                .trim_start();
+            if let Some(replacement) = rewrite_import_line(stripped) {
+                let indent_len = line.len() - trimmed.len();
+                out.push_str(&line[..indent_len]);
+                out.push_str(&replacement);
+                out.push('\n');
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 // ── Process lifecycle ─────────────────────────────────────────────────────
 
 /// Spawns a new JavaScript process with the given name and source code.
@@ -127,7 +238,8 @@ pub fn spawn_process(name: &str, js_source: &str) -> u32 {
     };
     if let Some(sandbox_arc) = result {
         let mut sandbox = sandbox_arc.lock();
-        if let Err(e) = sandbox.eval(js_source) {
+        let transformed = transform_imports(js_source);
+        if let Err(e) = sandbox.eval(&transformed) {
             drop(sandbox);
             crash_process(pid, name, &e);
             return pid;
@@ -236,7 +348,7 @@ pub fn poll_processes() {
     };
     if let Some((arc, name)) = active_info {
         let mut sandbox = arc.lock();
-        sandbox.start_timeslice();
+        if active_pid != 1 { sandbox.start_timeslice(); }
         for k in keys {
             let script = alloc::format!(
                 "if (typeof globalThis.on_key === 'function') {{ globalThis.on_key({}); }}",
@@ -319,7 +431,8 @@ pub fn poll_processes() {
 
         let crash_err: Option<String> = {
             let mut sandbox = sandbox_arc.lock();
-            sandbox.start_timeslice();
+            // pid=1 is winman — system process, must never be preempted mid-render
+            if pid != 1 { sandbox.start_timeslice(); }
             let mut err = None;
 
             for msg in messages {
