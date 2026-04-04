@@ -1297,7 +1297,7 @@ unsafe extern "C" fn js_os_list_bin(ctx: *mut JSContext, _this: JSValue, _argc: 
 
     // Safety net: include any embedded BINS not yet seeded into storage.
     for key in BINS.lock().keys() {
-        if !keys.contains(key) {
+        if key.ends_with(".jsos") && !keys.contains(key) {
             keys.push(key.clone());
         }
     }
