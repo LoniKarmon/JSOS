@@ -1,4 +1,4 @@
-const { Window, Keys } = require('libjsos.js');
+import { Window, Keys } from 'libjsos.js';
 
 const WIN_W = 960, WIN_H = 960;
 

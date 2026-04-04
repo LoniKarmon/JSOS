@@ -6,7 +6,7 @@ import css    from 'css';
 import layout from 'layout';
 import paint  from 'paint';
 
-const { Window, Keys } = require('libjsos.js');
+import { Window, Keys } from 'libjsos.js';
 
 // ── Window ────────────────────────────────────────────────────────────────────
 const W = 680, H = 520;
