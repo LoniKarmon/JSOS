@@ -166,6 +166,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             ("seriallog.jsos",    include_str!("jsos/seriallog.jsos")),
             ("canvastest.jsos",   include_str!("jsos/canvastest.jsos")),
             ("stress_test.jsos",  include_str!("jsos/stress_test.jsos")),
+            ("libjsos.js",        include_str!("js/libjsos.js")),
         ];
         for (name, source) in BUILTIN_BINS {
             os::storage::write_object(name, source.as_bytes());

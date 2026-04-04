@@ -1,17 +1,19 @@
 // drawtest.jsos - Visual test for drawLine, drawCircle, fillCircle
 
+const { Window, Keys } = require('libjsos.js');
+
 const W = 400, H = 340;
-const winId = os.window.create(80, 60, W, H);
+const win = new Window(80, 60, W, H);
 
 function render() {
     // Background
-    os.window.drawRect(winId, 0, 0, W, H, 18, 18, 28);
+    win.clear(18, 18, 28);
 
     // Title
-    os.window.drawString(winId, "Drawing Primitives Test", 10, 20, 220, 220, 255);
+    win.text(10, 20, "Drawing Primitives Test", 220, 220, 255);
 
     // ── Section 1: drawLine ──────────────────────────────────────────────────
-    os.window.drawString(winId, "drawLine", 10, 50, 180, 180, 180);
+    win.text(10, 50, "drawLine", 180, 180, 180);
 
     // Star-burst from a center point
     const cx = 70, cy = 100;
@@ -30,30 +32,30 @@ function render() {
         const x2 = Math.round(cx + Math.cos(angle) * 45);
         const y2 = Math.round(cy + Math.sin(angle) * 45);
         const [r, g, b] = colors[i];
-        os.window.drawLine(winId, cx, cy, x2, y2, r, g, b);
+        win.line(cx, cy, x2, y2, r, g, b);
     }
 
     // Diagonal cross-hatch box
     const bx = 150, by = 60, bw = 80, bh = 60;
-    os.window.drawRect(winId, bx, by, bw, bh, 40, 40, 60);
+    win.rect(bx, by, bw, bh, 40, 40, 60);
     // X diagonals
-    os.window.drawLine(winId, bx,      by,      bx+bw, by+bh, 100, 200, 255);
-    os.window.drawLine(winId, bx+bw,   by,      bx,    by+bh, 100, 200, 255);
+    win.line(bx,      by,      bx+bw, by+bh, 100, 200, 255);
+    win.line(bx+bw,   by,      bx,    by+bh, 100, 200, 255);
     // Mid-cross
-    os.window.drawLine(winId, bx,      by+bh/2, bx+bw, by+bh/2, 80, 160, 220);
-    os.window.drawLine(winId, bx+bw/2, by,      bx+bw/2, by+bh, 80, 160, 220);
-    os.window.drawString(winId, "lines", bx+25, by+bh+14, 140, 140, 180);
+    win.line(bx,      by+bh/2, bx+bw, by+bh/2, 80, 160, 220);
+    win.line(bx+bw/2, by,      bx+bw/2, by+bh, 80, 160, 220);
+    win.text(bx+25, by+bh+14, "lines", 140, 140, 180);
 
     // ── Section 2: drawCircle ────────────────────────────────────────────────
-    os.window.drawString(winId, "drawCircle", 10, 170, 180, 180, 180);
+    win.text(10, 170, "drawCircle", 180, 180, 180);
 
     // Concentric rings
     const ocx = 70, ocy = 225;
-    os.window.drawCircle(winId, ocx, ocy, 40, 255, 80,  80 );
-    os.window.drawCircle(winId, ocx, ocy, 30, 255, 160, 40 );
-    os.window.drawCircle(winId, ocx, ocy, 20, 255, 255, 40 );
-    os.window.drawCircle(winId, ocx, ocy, 10, 80,  255, 80 );
-    os.window.drawCircle(winId, ocx, ocy, 3,  255, 255, 255);
+    win.circle(ocx, ocy, 40, 255, 80,  80 );
+    win.circle(ocx, ocy, 30, 255, 160, 40 );
+    win.circle(ocx, ocy, 20, 255, 255, 40 );
+    win.circle(ocx, ocy, 10, 80,  255, 80 );
+    win.circle(ocx, ocy, 3,  255, 255, 255);
 
     // Scattered outline circles
     const scatters = [
@@ -63,51 +65,42 @@ function render() {
         [255, 220, 10, 255, 160,  60],
     ];
     for (const [x, y, r, cr, cg, cb] of scatters) {
-        os.window.drawCircle(winId, x, y, r, cr, cg, cb);
+        win.circle(x, y, r, cr, cg, cb);
     }
-    os.window.drawString(winId, "circles", 155, 268, 140, 140, 180);
+    win.text(155, 268, "circles", 140, 140, 180);
 
     // ── Section 3: fillCircle ────────────────────────────────────────────────
-    os.window.drawString(winId, "fillCircle", 290, 170, 180, 180, 180);
+    win.text(290, 170, "fillCircle", 180, 180, 180);
 
     // Overlapping filled circles (painter's order)
-    os.window.fillCircle(winId, 340, 220, 35, 200, 60,  60 );
-    os.window.fillCircle(winId, 365, 240, 35, 60,  180, 60 );
-    os.window.fillCircle(winId, 317, 240, 35, 60,  80,  200);
+    win.fillCircle(340, 220, 35, 200, 60,  60 );
+    win.fillCircle(365, 240, 35, 60,  180, 60 );
+    win.fillCircle(317, 240, 35, 60,  80,  200);
     // Small white highlight dot
-    os.window.fillCircle(winId, 340, 220, 6,  255, 255, 255);
+    win.fillCircle(340, 220, 6,  255, 255, 255);
 
-    os.window.drawString(winId, "filled", 322, 282, 140, 140, 180);
+    win.text(322, 282, "filled", 140, 140, 180);
 
     // ── Combined: circle + spokes ────────────────────────────────────────────
-    os.window.drawString(winId, "combined", 10, 300, 180, 180, 180);
+    win.text(10, 300, "combined", 180, 180, 180);
     const wx = 70, wy = 320;
-    os.window.fillCircle(winId, wx, wy, 14, 40, 40, 80);
-    os.window.drawCircle(winId, wx, wy, 14, 120, 120, 220);
+    win.fillCircle(wx, wy, 14, 40, 40, 80);
+    win.circle(wx, wy, 14, 120, 120, 220);
     for (let i = 0; i < 6; i++) {
         const a = i * Math.PI / 3;
-        os.window.drawLine(winId, wx, wy,
+        win.line(wx, wy,
             Math.round(wx + Math.cos(a) * 14),
             Math.round(wy + Math.sin(a) * 14),
             180, 180, 255);
     }
 
-    os.window.flush(winId);
+    win.flush();
 }
 
-globalThis.on_key = function(charCode) {
-    // Q / Escape to quit
-    if (charCode === 113 || charCode === 81 || charCode === 27) {
-        os.exit();
-    }
-};
+function on_key(charCode) {
+    if (Keys.isQuit(charCode)) os.exit();
+}
 
-globalThis.on_ipc = function(msg) {
-    try {
-        const parsed = JSON.parse(msg);
-        if (parsed.type === "KEY") globalThis.on_key(parsed.charCode);
-        else if (parsed.type === "RENDER") render();
-    } catch(e) {}
-};
+win.installIpc({ key: on_key, render });
 
 render();

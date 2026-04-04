@@ -251,6 +251,7 @@ lazy_static! {
         m.insert("calculator.jsos".to_string(), include_str!("jsos/calculator.jsos").to_string());
         m.insert("imageview.jsos".to_string(), include_str!("jsos/imageview.jsos").to_string());
         m.insert("canvastest.jsos".to_string(), include_str!("jsos/canvastest.jsos").to_string());
+        m.insert("libjsos.js".to_string(), include_str!("js/libjsos.js").to_string());
         Mutex::new(m)
     };
     static ref CLIPBOARD: Mutex<String> = Mutex::new(String::new());
