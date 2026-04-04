@@ -1019,15 +1019,29 @@ pub fn poll_network() {
         };
 
         if let Some(sandbox_arc) = sandbox_arc {
-            let escaped = job.response
+            let status_code: u16 = job.response
+                .split_once('\n')
+                .and_then(|(first_line, _)| {
+                    first_line.split_whitespace().nth(1)
+                })
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(200);
+
+            let body_str = if let Some(pos) = job.response.find("\r\n\r\n") {
+                &job.response[pos + 4..]
+            } else {
+                &job.response
+            };
+
+            let escaped = body_str
                 .replace('\\', "\\\\")
                 .replace('`', "\\`")
                 .replace('\r', "");
 
             let script = alloc::format!(
                 "if (typeof globalThis.__onFetchResponse === 'function') \
-                 {{ globalThis.__onFetchResponse('{}', `{}`); }}",
-                job.url, escaped
+                 {{ globalThis.__onFetchResponse('{}', {}, `{}`); }}",
+                job.url, status_code, escaped
             );
             let _ = sandbox_arc.lock().eval(&script);
         }
