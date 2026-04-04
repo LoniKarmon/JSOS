@@ -1,14 +1,17 @@
 // sysman.jsos — JSOS Unified System Monitor
 // Displays CPU, memory, RTC, and manages running processes.
 
+import { Window, Keys } from 'libjsos.js';
+
 const WIN_W = 720;
 const WIN_H = 400;
-const winId = os.window.create(50, 40, WIN_W, WIN_H);
+const win = new Window(50, 40, WIN_W, WIN_H);
+const winId = win.id;
 
 // ── Colors ──────────────────────────────────────────────────────────────────
 const BG       = [ 18,  18,  22];
 const HEADER   = [ 28,  28,  34];
-const ACCENT   = [ 70, 140, 220]; 
+const ACCENT   = [ 70, 140, 220];
 const BRIGHT   = [240, 240, 245];
 const DIM      = [140, 140, 150];
 const SELECTED = [ 45,  55,  80];
@@ -43,7 +46,7 @@ function loadData() {
     try { info = JSON.parse(os.sysinfo()); } catch(e) { info = {}; }
     try { procs = JSON.parse(os.processes()); } catch(e) { procs = []; }
     procs.sort(function(a, b) { return a.pid - b.pid; });
-    
+
     if (selected >= procs.length) selected = Math.max(0, procs.length - 1);
     if (selected < scrollOff) scrollOff = selected;
     if (selected >= scrollOff + MAX_VISIBLE) scrollOff = selected - MAX_VISIBLE + 1;
@@ -64,7 +67,7 @@ function renderLeft(y) {
     y = drawSection("PROCESSOR", 15, y, LEFT_W - 15);
     y += 18;
     drawLabel("Vendor:  ", info.vendor || "N/A", 20, y); y += 20;
-    
+
     // Model might be long
     const brand = info.brand || "N/A";
     os.window.drawString(winId, "Model:", 20, y, ...DIM);
@@ -75,7 +78,7 @@ function renderLeft(y) {
         brandY += 16;
     }
     y = brandY + 6;
-    
+
     const freqStr = (info.base_mhz > 0) ? info.base_mhz + " MHz (Max: " + info.max_mhz + ")" : "N/A";
     drawLabel("Speed:   ", freqStr, 20, y); y += 22;
 
@@ -87,7 +90,7 @@ function renderLeft(y) {
     const total = info.heap_total_mb || 0;
     const pct = total > 0 ? Math.floor((used / total) * 100) : 0;
     drawLabel("Kernel Heap:   ", used + " / " + total + " MiB (" + pct + "%)", 20, y); y += 18;
-    
+
     const barW = LEFT_W - 30;
     os.window.drawRect(winId, 20, y, barW, 10, ...BAR_BG);
     if (total > 0 && used > 0) {
@@ -98,12 +101,12 @@ function renderLeft(y) {
 
     y = drawSection("RTC CLOCK", 15, y + 8, LEFT_W - 15);
     y += 18;
-    
+
     let rtc = {h:0, m:0, s:0, day:1, month:1, year:2000};
     try { rtc = JSON.parse(os.rtc()); } catch(e) {}
     const timeStr = pad(rtc.h) + ":" + pad(rtc.m) + ":" + pad(rtc.s);
     const dateStr = pad(rtc.day) + "/" + pad(rtc.month) + "/" + rtc.year;
-    
+
     os.window.drawString(winId, timeStr, 40, y + 10, ...BRIGHT);
     os.window.drawString(winId, dateStr, 120, y + 10, ...DIM);
 }
@@ -132,7 +135,7 @@ function renderRight() {
         const tc = sel ? SEL_TEXT : (self_ ? WARN : ROW_TEXT);
         os.window.drawString(winId, String(p.pid),  RIGHT_X + 15, y + 14, ...tc);
         os.window.drawString(winId, p.name,         RIGHT_X + 70, y + 14, ...tc);
-        
+
         if (self_) {
             os.window.drawString(winId, "(sysman)", WIN_W - 85, y + 14, ...WARN);
         }
@@ -144,7 +147,7 @@ function renderRight() {
         const sbH  = WIN_H - LIST_Y - FOOTER_H;
         const barH = Math.max(10, Math.floor(sbH * MAX_VISIBLE / procs.length));
         const barY = LIST_Y + Math.floor(sbH * scrollOff / procs.length);
-        
+
         os.window.drawRect(winId, WIN_W - sbW, LIST_Y, sbW, sbH, ...HEADER);
         os.window.drawRect(winId, WIN_W - sbW, barY, sbW, barH, ...ACCENT);
     }
@@ -174,31 +177,31 @@ function render() {
     const footerY = WIN_H - FOOTER_H;
     os.window.drawRect(winId, 0, footerY, WIN_W, FOOTER_H, ...HEADER);
     os.window.drawRect(winId, 0, footerY, WIN_W, 1, ...DIVIDER);
-    
+
     const fTextY = WIN_H - 10;
     const upSecs = os.uptime();
     const upMin = Math.floor(upSecs / 60);
     os.window.drawString(winId, "Uptime: " + upMin + "m " + pad(upSecs % 60) + "s", 15, fTextY, ...DIM);
-    
+
     os.window.drawString(winId, "[UP/DWN] Navigate", RIGHT_X, fTextY, ...DIM);
     os.window.drawString(winId, "[K] Kill", RIGHT_X + 160, fTextY, ...KILL_COL);
     os.window.drawString(winId, "[Q] Quit", WIN_W - 75, fTextY, ...DIM);
 
-    os.window.flush(winId);
+    win.flush();
 }
 
 // ── Input ────────────────────────────────────────────────────────────────────
 
-globalThis.on_key = function(charCode) {
-    if (charCode === 113 || charCode === 81 || charCode === 27) {
+function on_key(charCode) {
+    if (Keys.isQuit(charCode)) {
         os.exit();
-    } else if (charCode === 16) {
+    } else if (charCode === Keys.UP) {
         if (selected > 0) {
             selected--;
             if (selected < scrollOff) scrollOff = selected;
         }
         render();
-    } else if (charCode === 14) {
+    } else if (charCode === Keys.DOWN) {
         if (selected < procs.length - 1) {
             selected++;
             if (selected >= scrollOff + MAX_VISIBLE) scrollOff = selected - MAX_VISIBLE + 1;
@@ -209,24 +212,18 @@ globalThis.on_key = function(charCode) {
             const target = procs[selected];
             if (target.pid !== globalThis.__PID) {
                 os.exit(target.pid);
-                render(); 
+                render();
             }
         }
     }
-};
+}
 
-globalThis.on_ipc = function(msg) {
-    try {
-        const p = JSON.parse(msg);
-        if (p.type === "KEY")    { globalThis.on_key(p.charCode); return; }
-        if (p.type === "RENDER") { render(); return; }
-    } catch (e) {}
-};
+win.installIpc({ key: on_key, render });
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 
-setInterval(function() {
+win.setInterval(1000, function() {
     render();
-}, 1000);
+});
 
 render();
