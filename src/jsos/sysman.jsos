@@ -1,7 +1,7 @@
 // sysman.jsos — JSOS Unified System Monitor
 // Displays CPU, memory, RTC, and manages running processes.
 
-const { Window, Keys } = require('libjsos.js');
+import { Window, Keys } from 'libjsos.js';
 
 const WIN_W = 720;
 const WIN_H = 400;

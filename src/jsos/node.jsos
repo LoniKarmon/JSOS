@@ -1,7 +1,7 @@
 // src/js/node.js
 // Native JavaScript Evaluation Environment
 
-const { Window, Keys } = require('libjsos.js');
+import { Window, Keys } from 'libjsos.js';
 
 // Transform let/const → var so bindings survive across REPL eval() calls.
 // QuickJS scopes `let`/`const` to a single JS_Eval invocation; `var` leaks
