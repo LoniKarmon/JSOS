@@ -1,6 +1,6 @@
 // drawtest.jsos - Visual test for drawLine, drawCircle, fillCircle
 
-const { Window, Keys } = require('libjsos.js');
+import { Window, Keys } from 'libjsos.js';
 
 const W = 400, H = 340;
 const win = new Window(80, 60, W, H);

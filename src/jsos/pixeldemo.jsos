@@ -1,7 +1,7 @@
 // pixeldemo.jsos — Pixel Buffer API demo
 // Renders a static RGB gradient using direct pixel writes.
 
-const { Window, Keys } = require('libjsos.js');
+import { Window, Keys } from 'libjsos.js';
 
 const W = 320, H = 240;
 const win = new Window(120, 80, W, H);
