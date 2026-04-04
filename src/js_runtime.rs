@@ -666,6 +666,34 @@ impl QuickJsSandbox {
                 JS_FreeValue(ctx, v);
             }
 
+            // EventTarget/EventEmitter shim — runs after require() is available
+            {
+                let shim = "(function() {
+    var _EventEmitter = require('events');
+    if (_EventEmitter) {
+        globalThis.EventEmitter = _EventEmitter;
+        globalThis.EventTarget = function() { _EventEmitter.call(this); };
+        globalThis.EventTarget.prototype = Object.create(_EventEmitter.prototype);
+        globalThis.EventTarget.prototype.constructor = globalThis.EventTarget;
+        globalThis.EventTarget.prototype.addEventListener = _EventEmitter.prototype.on;
+        globalThis.EventTarget.prototype.removeEventListener = _EventEmitter.prototype.off;
+        globalThis.EventTarget.prototype.dispatchEvent = function(event) {
+            var type = typeof event === 'string' ? event : event.type;
+            this.emit(type, event);
+        };
+    }
+})();";
+                let c_shim = js_cstring(shim);
+                let fname = js_cstring("<event-target-shim>");
+                let v = JS_Eval(ctx, c_shim.as_ptr() as *const c_char, c_shim.len() - 1, fname.as_ptr() as *const c_char, JS_EVAL_TYPE_GLOBAL);
+                if js_is_exception(v) {
+                    let ex = JS_GetException(ctx);
+                    crate::serial_println!("[QuickJS] event-target-shim error: {}", js_to_rust_string(ctx, ex));
+                    JS_FreeValue(ctx, ex);
+                }
+                JS_FreeValue(ctx, v);
+            }
+
             Ok(Self { rt, ctx })
         }
     }
