@@ -1,5 +1,7 @@
 // src/jsos/shell.jsos — JSOS Interactive Shell
 
+import { Window, Keys, Store } from 'libjsos.js';
+
 const _sysLog = console.log;
 let _promptSuspended = false;
 
@@ -21,8 +23,9 @@ const SB_BG  = [30,  30,  45 ];
 const SB_FG  = [80,  100, 180];
 
 // ── State ──────────────────────────────────────────────────────────────────
+const win = new Window(50, 50, WIN_W, WIN_H);
 const state = {
-    winId:        os.window.create(50, 50, WIN_W, WIN_H),
+    winId:        win.id,
     // Shell State
     buffer:       "",
     cursor:       0,
@@ -177,7 +180,7 @@ function render() {
     else renderShell();
 }
 
-setInterval(() => { if (state.editorMode) renderEditor(); }, 500);
+win.setInterval(500, () => { if (state.editorMode) renderEditor(); });
 
 // ── Commands ───────────────────────────────────────────────────────────────
 const COMMANDS = {
@@ -559,24 +562,19 @@ globalThis.on_key = function(charCode) {
 };
 
 // ── IPC ────────────────────────────────────────────────────────────────────
-globalThis.on_ipc = function(msg) {
-    try {
-        const p = JSON.parse(msg);
-        if (p.type === "KEY")    { globalThis.on_key(p.charCode); return; }
-        if (p.type === "RENDER") { render(); return; }
-        if (p.type === "MOUSE")  { return; }
-        if (p.type === "SCROLL") {
-            if (p.delta > 0) scrollUp(p.delta * 3);
-            else             scrollDown(-p.delta * 3);
-            render();
-            return;
-        }
-    } catch(e) {
-        // Only fall back to on_input if it doesn't look like our JSON events
+win.installIpc({
+    key(charCode) { globalThis.on_key(charCode); },
+    render,
+    scroll(delta) {
+        if (delta > 0) scrollUp(delta * 3);
+        else           scrollDown(-delta * 3);
+        render();
+    },
+    raw(msg) {
         if (msg.startsWith("{")) return;
-    }
-    globalThis.on_input(msg);
-};
+        globalThis.on_input(msg);
+    },
+});
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 console.log("Welcome to JSOS - The JavaScript Operating System!");
