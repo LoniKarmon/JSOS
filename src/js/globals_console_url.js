@@ -1,3 +1,40 @@
+(function() {
+    function _stringify(a) {
+        return typeof a === 'object' ? JSON.stringify(a) : String(a);
+    }
+
+    function _formatArgs(args) {
+        if (args.length === 0) return '';
+        if (typeof args[0] !== 'string' || !/%(s|d|i|f|o|O)/.test(args[0])) {
+            return Array.prototype.map.call(args, _stringify).join(' ');
+        }
+        var fmt = args[0];
+        var i = 1;
+        var result = fmt.replace(/%(s|d|i|f|o|O)/g, function(_, spec) {
+            if (i >= args.length) return '%' + spec;
+            var arg = args[i++];
+            if (spec === 's') return String(arg);
+            if (spec === 'd' || spec === 'i') return String(Math.trunc(Number(arg)));
+            if (spec === 'f') return String(Number(arg));
+            return JSON.stringify(arg);
+        });
+        for (; i < args.length; i++) {
+            result += ' ' + _stringify(args[i]);
+        }
+        return result;
+    }
+
+    var _nativeLog = console.log;
+    var _nativeWarn = console.warn;
+    var _nativeError = console.error;
+    var _nativeInfo = console.info;
+
+    console.log = function() { _nativeLog(_formatArgs(arguments)); };
+    console.warn = function() { _nativeWarn(_formatArgs(arguments)); };
+    console.error = function() { _nativeError(_formatArgs(arguments)); };
+    console.info = function() { _nativeInfo(_formatArgs(arguments)); };
+})();
+
 console.dir = function(obj) {
     console.log(JSON.stringify(obj, null, 2));
 };
