@@ -1,13 +1,15 @@
 // seriallog.jsos — Real-time kernel serial log viewer
 // Responds to winman RENDER IPC so it stays visible through os.clear() cycles.
 
+import { Window, Keys } from 'libjsos.js';
+
 const WIN_W = 1000;
 const WIN_H = 700;
 const LINE_H = 13;
 const VISIBLE_LINES = Math.floor((WIN_H - 14) / LINE_H);
 const MAX_CHARS = 124;
 
-const win = os.window.create(20, 20, WIN_W, WIN_H);
+const win = new Window(20, 20, WIN_W, WIN_H);
 
 const C_BG   = [10,  12,  10];
 const C_TEXT = [0,  220,  0];
@@ -31,10 +33,9 @@ function render() {
     allLines = log.split('\n');
     if (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop();
 
-    os.window.drawRect(win, 0, 0, WIN_W, WIN_H, C_BG[0], C_BG[1], C_BG[2]);
-    os.window.drawRect(win, 0, 0, WIN_W, 12, C_HEAD[0], C_HEAD[1], C_HEAD[2]);
-    os.window.drawString(win, 'Serial Log  [' + allLines.length + ' lines]',
-        4, 2, C_TITL[0], C_TITL[1], C_TITL[2]);
+    win.rect(0, 0, WIN_W, WIN_H, ...C_BG);
+    win.rect(0, 0, WIN_W, 12, ...C_HEAD);
+    win.text(4, 2, 'Serial Log  [' + allLines.length + ' lines]', ...C_TITL);
 
     const total = allLines.length;
     const start = Math.max(0, total - VISIBLE_LINES);
@@ -43,27 +44,18 @@ function render() {
         const line = allLines[i];
         const col  = lineColor(line);
         const text = line.length > MAX_CHARS ? line.substring(0, MAX_CHARS) : line;
-        os.window.drawString(win, text, 2, y, col[0], col[1], col[2]);
+        win.text(2, y, text, ...col);
     }
 
-    os.window.flush(win);
+    win.flush();
 }
 
-// ── IPC ───────────────────────────────────────────────────────────────────────
-globalThis.on_ipc = function(msg) {
-    try {
-        const parsed = JSON.parse(msg);
-        if (parsed.type === 'RENDER') {
-            render();
-        }
-    } catch (e) {}
-};
-
-globalThis.on_key = function(charCode) {
-    if (charCode === 113 || charCode === 27) { // q or ESC
-        os.exit();
-    }
-};
+win.installIpc({
+    render,
+    key(charCode) {
+        if (Keys.isQuit(charCode)) os.exit();
+    },
+});
 
 // Initial draw
 render();

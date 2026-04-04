@@ -1,6 +1,8 @@
 // webremote.jsos — JSOS Web Remote Dashboard
 // Starts an HTTP server, registers HTML, and shows a local status window
 
+import { Window, Keys } from 'libjsos.js';
+
 os.log("Web Remote starting...");
 os.net.listen(80);
 
@@ -19,7 +21,7 @@ img{display:block;max-width:95vw;max-height:75vh;image-rendering:pixelated}
 .kb{background:#101830;padding:8px 16px;border-radius:8px;margin-top:10px;font-size:.8em;color:#5a6890;border:1px solid #1a2550}
 .kb b{color:#80b0ff}
 </style></head><body>
-<div class='bar'><h1>JSOS Remote Dashboard</h1>
+<div class='bar'><h1>JSOS Web Remote</h1>
 <div><span class='status'></span>Connected</div>
 <div class='info'>Auto-refresh ~1 FPS &middot; Click image to focus &middot; Type to send keys</div></div>
 <div class='screen-wrap' tabindex='0' id='sw'>
@@ -36,7 +38,7 @@ os.net.serveStatic(HTML);
 
 // ── Status Window ──────────────────────────────────────────────────────────
 const W = 440, H = 240;
-const winId = os.window.create(100, 80, W, H);
+const win = new Window(100, 80, W, H);
 
 const BG      = [10,  14,  28 ];
 const HEADER  = [14,  20,  40 ];
@@ -49,21 +51,21 @@ const GREEN   = [80,  220, 120];
 const DIVIDER = [35,  45,  70 ];
 
 function render() {
-    os.window.drawRect(winId, 0, 0, W, H, BG[0], BG[1], BG[2]);
+    win.rect(0, 0, W, H, ...BG);
 
     // Header
-    os.window.drawRect(winId, 0, 0, W, 28, HEADER[0], HEADER[1], HEADER[2]);
-    os.window.drawRect(winId, 0, 27, W, 1, ACCENT[0], ACCENT[1], ACCENT[2]);
-    os.window.drawString(winId, "JSOS Web Remote", 14, 18, BRIGHT[0], BRIGHT[1], BRIGHT[2]);
+    win.rect(0, 0, W, 28, ...HEADER);
+    win.rect(0, 27, W, 1, ...ACCENT);
+    win.text(14, 18, "JSOS Web Remote", ...BRIGHT);
 
     let y = 48;
 
     // Status indicator
-    os.window.drawRect(winId, 20, y - 5, 8, 8, GREEN[0], GREEN[1], GREEN[2]);
-    os.window.drawString(winId, "Server Active", 36, y, GREEN[0], GREEN[1], GREEN[2]);
+    win.rect(20, y - 5, 8, 8, ...GREEN);
+    win.text(36, y, "Server Active", ...GREEN);
     y += 24;
 
-    os.window.drawRect(winId, 14, y - 8, W - 28, 1, DIVIDER[0], DIVIDER[1], DIVIDER[2]);
+    win.rect(14, y - 8, W - 28, 1, ...DIVIDER);
     y += 8;
 
     // Connection info
@@ -71,68 +73,53 @@ function render() {
     try {
         const config = os.net.config();
         const match = config.match(/IP: (\d+\.\d+\.\d+\.\d+)/);
-        if (match) {
-            ip = match[1];
-        }
+        if (match) ip = match[1];
     } catch(e) {}
-    
-    os.window.drawString(winId, "Address:", 20, y, LABEL[0], LABEL[1], LABEL[2]);
-    os.window.drawString(winId, "http://" + ip + ":8080/ (Host)", 96, y, VALUE[0], VALUE[1], VALUE[2]);
+
+    win.text(20, y, "Address:", ...LABEL);
+    win.text(96, y, "http://" + ip + ":8080/ (Host)", ...VALUE);
     y += 20;
 
-    os.window.drawString(winId, "Port:", 20, y, LABEL[0], LABEL[1], LABEL[2]);
-    os.window.drawString(winId, "80", 96, y, VALUE[0], VALUE[1], VALUE[2]);
+    win.text(20, y, "Port:", ...LABEL);
+    win.text(96, y, "80", ...VALUE);
     y += 20;
 
-    os.window.drawString(winId, "Protocol:", 20, y, LABEL[0], LABEL[1], LABEL[2]);
-    os.window.drawString(winId, "HTTP/1.1", 96, y, VALUE[0], VALUE[1], VALUE[2]);
+    win.text(20, y, "Protocol:", ...LABEL);
+    win.text(96, y, "HTTP/1.1", ...VALUE);
     y += 24;
 
-    os.window.drawRect(winId, 14, y - 8, W - 28, 1, DIVIDER[0], DIVIDER[1], DIVIDER[2]);
+    win.rect(14, y - 8, W - 28, 1, ...DIVIDER);
     y += 8;
 
     // Features
-    os.window.drawString(winId, "Features:", 20, y, LABEL[0], LABEL[1], LABEL[2]);
+    win.text(20, y, "Features:", ...LABEL);
     y += 18;
-    os.window.drawString(winId, "- Live screenshot stream", 30, y, DIM[0], DIM[1], DIM[2]);
+    win.text(30, y, "- Live screenshot stream", ...DIM);
     y += 16;
-    os.window.drawString(winId, "- Keyboard input forwarding", 30, y, DIM[0], DIM[1], DIM[2]);
+    win.text(30, y, "- Keyboard input forwarding", ...DIM);
     y += 16;
-    os.window.drawString(winId, "- Auto-refresh (1 FPS)", 30, y, DIM[0], DIM[1], DIM[2]);
+    win.text(30, y, "- Auto-refresh (1 FPS)", ...DIM);
 
-    os.window.drawRect(winId, 0, H - 20, W, 20, HEADER[0], HEADER[1], HEADER[2]);
-    os.window.drawString(winId, "Press Q or Esc to stop server", 14, H - 6, DIM[0], DIM[1], DIM[2]);
+    win.rect(0, H - 20, W, 20, ...HEADER);
+    win.text(14, H - 6, "Press Q or Esc to stop server", ...DIM);
 
-    os.window.flush(winId);
+    win.flush();
 }
 
 // ── Input ──────────────────────────────────────────────────────────────────
-
-globalThis.on_key = function(charCode) {
-    if (charCode === 113 || charCode === 81 || charCode === 27) {
-        os.store.set("focus_pid", "");
-        os.exit();
-    }
-};
-
-globalThis.on_ipc = function(msg) {
-    try {
-        const parsed = JSON.parse(msg);
-        if (parsed.type === "KEY") globalThis.on_key(parsed.charCode);
-        else if (parsed.type === "RENDER") render();
-    } catch(e) {}
-};
+win.installIpc({
+    render,
+    key(charCode) {
+        if (Keys.isQuit(charCode)) {
+            os.store.set("focus_pid", "");
+            os.exit();
+        }
+    },
+});
 
 // ── Timer: re-render periodically to update IP ─────────────────────────────
-
-globalThis.__fireTimer = function(id) {
-    if (id === "1") {
-        render();
-        os._setTimeout(String(globalThis.__PID), "1", "3000");
-    }
-};
+win.setInterval(3000, render);
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 render();
-os._setTimeout(String(globalThis.__PID), "1", "3000");
 os.log("Remote dash active on port 80");

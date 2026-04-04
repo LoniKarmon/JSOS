@@ -1,12 +1,14 @@
 // snake.jsos - Classic Snake game for JSOS
 // Controls: WASD to move, R to restart, Q/Escape to quit
 
+import { Window, Keys } from 'libjsos.js';
+
 const CELL = 26;
 const COLS = 20, ROWS = 16;
 const WIN_W = COLS * CELL + 8, WIN_H = ROWS * CELL + 52;
 const GRID_X = 4, GRID_Y = 34;
 
-const winId = os.window.create(90, 65, WIN_W, WIN_H);
+const win = new Window(90, 65, WIN_W, WIN_H);
 
 // --- Game State ---
 let snake, dir, nextDir, food, score, alive;
@@ -36,29 +38,25 @@ function placeFood() {
 
 // --- Rendering ---
 function render() {
-    // Window background
-    os.window.drawRect(winId, 0, 0, WIN_W, WIN_H, 12, 18, 28);
-
-    // Title bar logic moved to winman, but we'll draw score here
-    os.window.drawString(winId, "Score: " + score, 8, 20, 150, 255, 150);
+    win.rect(0, 0, WIN_W, WIN_H, 12, 18, 28);
+    win.text(8, 20, "Score: " + score, 150, 255, 150);
 
     // Grid background
-    os.window.drawRect(winId, GRID_X, GRID_Y, COLS * CELL, ROWS * CELL, 8, 28, 16);
+    win.rect(GRID_X, GRID_Y, COLS * CELL, ROWS * CELL, 8, 28, 16);
 
     // Subtle grid lines
     for (let c = 0; c <= COLS; c++) {
-        os.window.drawRect(winId, GRID_X + c * CELL, GRID_Y, 1, ROWS * CELL, 15, 40, 24);
+        win.rect(GRID_X + c * CELL, GRID_Y, 1, ROWS * CELL, 15, 40, 24);
     }
     for (let r = 0; r <= ROWS; r++) {
-        os.window.drawRect(winId, GRID_X, GRID_Y + r * CELL, COLS * CELL, 1, 15, 40, 24);
+        win.rect(GRID_X, GRID_Y + r * CELL, COLS * CELL, 1, 15, 40, 24);
     }
 
-    // Food (red pulsing square — actually just a red square padded in)
-    os.window.drawRect(winId, GRID_X + food.x * CELL + 3, GRID_Y + food.y * CELL + 3, CELL - 6, CELL - 6, 255, 70, 70);
-    // Food highlight
-    os.window.drawRect(winId, GRID_X + food.x * CELL + 4, GRID_Y + food.y * CELL + 4, 4, 4, 255, 180, 180);
+    // Food
+    win.rect(GRID_X + food.x * CELL + 3, GRID_Y + food.y * CELL + 3, CELL - 6, CELL - 6, 255, 70, 70);
+    win.rect(GRID_X + food.x * CELL + 4, GRID_Y + food.y * CELL + 4, 4, 4, 255, 180, 180);
 
-    // Snake body (gradient from bright head to darker tail)
+    // Snake body
     for (let i = snake.length - 1; i >= 0; i--) {
         const s = snake[i];
         const isHead = i === 0;
@@ -67,27 +65,25 @@ function render() {
         const g = fade;
         const b = isHead ? 100 : 60;
         const pad = isHead ? 1 : 2;
-        os.window.drawRect(winId, GRID_X + s.x * CELL + pad, GRID_Y + s.y * CELL + pad, CELL - pad*2, CELL - pad*2, r, g, b);
-        // Head eyes
+        win.rect(GRID_X + s.x * CELL + pad, GRID_Y + s.y * CELL + pad, CELL - pad*2, CELL - pad*2, r, g, b);
         if (isHead) {
-            os.window.drawRect(winId, GRID_X + s.x * CELL + 5, GRID_Y + s.y * CELL + 5, 4, 4, 255, 255, 255);
-            os.window.drawRect(winId, GRID_X + s.x * CELL + CELL - 10, GRID_Y + s.y * CELL + 5, 4, 4, 255, 255, 255);
+            win.rect(GRID_X + s.x * CELL + 5, GRID_Y + s.y * CELL + 5, 4, 4, 255, 255, 255);
+            win.rect(GRID_X + s.x * CELL + CELL - 10, GRID_Y + s.y * CELL + 5, 4, 4, 255, 255, 255);
         }
     }
 
-    // Status bar at bottom
-    os.window.drawRect(winId, 0, WIN_H - 20, WIN_W, 20, 10, 30, 20);
+    // Status bar
+    win.rect(0, WIN_H - 20, WIN_W, 20, 10, 30, 20);
     if (alive) {
-        os.window.drawString(winId, "WASD to move  |  Q to quit", 8, WIN_H - 5, 100, 150, 100);
+        win.text(8, WIN_H - 5, "WASD to move  |  Q to quit", 100, 150, 100);
     } else {
-        // Game over overlay
-        os.window.drawRect(winId, WIN_W/2 - 90, WIN_H/2 - 25, 180, 50, 180, 30, 30);
-        os.window.drawRect(winId, WIN_W/2 - 88, WIN_H/2 - 23, 176, 46, 220, 50, 50);
-        os.window.drawString(winId, "GAME OVER!", WIN_W/2 - 42, WIN_H/2 - 8, 255, 255, 255);
-        os.window.drawString(winId, "R=Restart  Q=Quit", WIN_W/2 - 68, WIN_H/2 + 12, 255, 220, 100);
+        win.rect(WIN_W/2 - 90, WIN_H/2 - 25, 180, 50, 180, 30, 30);
+        win.rect(WIN_W/2 - 88, WIN_H/2 - 23, 176, 46, 220, 50, 50);
+        win.text(WIN_W/2 - 42, WIN_H/2 - 8, "GAME OVER!", 255, 255, 255);
+        win.text(WIN_W/2 - 68, WIN_H/2 + 12, "R=Restart  Q=Quit", 255, 220, 100);
     }
 
-    os.window.flush(winId);
+    win.flush();
 }
 
 // --- Game Logic ---
@@ -120,56 +116,36 @@ function step() {
         snake.pop();
     }
 
-    if (os.store.get("focus_pid") === String(globalThis.__PID)) {
-        render();
-    }
+    if (os.store.get("focus_pid") === String(globalThis.__PID)) render();
 }
 
 // --- Input ---
-globalThis.on_key = function(charCode) {
-    // W / w / Up arrow
+function handleKey(charCode) {
     if (charCode === 119 || charCode === 87 || charCode === 72) {
         if (dir.y !== 1) nextDir = {x:0, y:-1};
-    // S / s / Down arrow
     } else if (charCode === 115 || charCode === 83 || charCode === 80) {
         if (dir.y !== -1) nextDir = {x:0, y:1};
-    // A / a / Left arrow
     } else if (charCode === 97 || charCode === 65 || charCode === 75) {
         if (dir.x !== 1) nextDir = {x:-1, y:0};
-    // D / d / Right arrow
     } else if (charCode === 100 || charCode === 68 || charCode === 77) {
         if (dir.x !== -1) nextDir = {x:1, y:0};
-    // R / r - restart
     } else if (charCode === 114 || charCode === 82) {
         reset();
         render();
-    // Q / q / Escape - quit
-    } else if (charCode === 113 || charCode === 81 || charCode === 27) {
+    } else if (Keys.isQuit(charCode)) {
         os.store.set("focus_pid", "");
         os.exit();
     }
-};
+}
 
-globalThis.on_ipc = function(msg) {
-    try {
-        const parsed = JSON.parse(msg);
-        if (parsed.type === "KEY") {
-            globalThis.on_key(parsed.charCode);
-        } else if (parsed.type === "RENDER") {
-            render();
-        }
-    } catch(e) {}
-};
+win.installIpc({
+    render,
+    key: handleKey,
+});
 
-// Game loop: 150ms per tick
-globalThis.__fireTimer = function(id) {
-    if (id === "1") {
-        step();
-        os._setTimeout(String(globalThis.__PID), "1", "250");
-    }
-};
+// Game loop: 250ms per tick
+win.setInterval(250, step);
 
 // Boot!
 reset();
 render();
-os._setTimeout(String(globalThis.__PID), "1", "250");
