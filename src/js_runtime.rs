@@ -985,6 +985,7 @@ unsafe fn register_os_namespace(ctx: *mut JSContext) {
     set_func(ctx, os, "sysinfo", js_os_sysinfo, 0);
     set_func(ctx, os, "rtc", js_os_rtc, 0);
     set_func(ctx, os, "screen", js_os_screen, 0);
+    set_func(ctx, os, "randomBytes", js_os_random_bytes, 1);
 
     // Font size constants: pass as the optional last arg to drawString
     set_prop_obj(ctx, os, "FONT_SMALL", js_int(0));
@@ -2516,6 +2517,32 @@ unsafe extern "C" fn js_os_screen(ctx: *mut JSContext, _this: JSValue, _argc: c_
     let json = format!("{{\"width\":{},\"height\":{}}}", w, h);
     let s = js_cstring(&json);
     JS_NewStringLen(ctx, s.as_ptr() as *const c_char, s.len() - 1)
+}
+
+unsafe extern "C" fn js_os_random_bytes(
+    ctx: *mut JSContext,
+    _this: JSValue,
+    argc: c_int,
+    argv: *const JSValue,
+) -> JSValue {
+    use core::arch::x86_64::_rdrand64_step;
+
+    if argc < 1 {
+        return js_undefined();
+    }
+    let n = (js_val_to_i32(ctx, *argv) as usize).min(65536);
+    let mut buf = alloc::vec![0u8; n];
+    let mut i = 0;
+    while i < n {
+        let mut val: u64 = 0;
+        if _rdrand64_step(&mut val) == 1 {
+            let bytes = val.to_le_bytes();
+            let take = (n - i).min(8);
+            buf[i..i + take].copy_from_slice(&bytes[..take]);
+            i += take;
+        }
+    }
+    JS_NewArrayBufferCopy(ctx, buf.as_ptr(), n)
 }
 
 // ======== Rust-side exports for C stubs ========

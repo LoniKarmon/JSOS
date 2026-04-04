@@ -43,18 +43,18 @@ globalThis.TextDecoder.prototype.decode = function(input) {
     return s;
 };
 
-// crypto: minimal polyfill (Math.random-based, not cryptographically secure)
+// crypto: hardware-backed via os.randomBytes() (RDRAND)
 globalThis.crypto = {
     getRandomValues: function(arr) {
-        for (let i = 0; i < arr.length; i++) {
-            arr[i] = Math.floor(Math.random() * 256);
-        }
+        const bytes = new Uint8Array(os.randomBytes(arr.length));
+        for (let i = 0; i < arr.length; i++) arr[i] = bytes[i];
         return arr;
     },
     randomUUID: function() {
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-            const r = Math.floor(Math.random() * 16);
-            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-        });
+        const bytes = new Uint8Array(os.randomBytes(16));
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0'));
+        return `${hex.slice(0,4).join('')}-${hex.slice(4,6).join('')}-${hex.slice(6,8).join('')}-${hex.slice(8,10).join('')}-${hex.slice(10,16).join('')}`;
     }
 };
