@@ -626,21 +626,39 @@ impl QuickJsSandbox {
 
                 // Network Fetch Promise Polyfill
                 globalThis.__fetchHandlers = {};
-                globalThis.__onFetchResponse = function(url, text) {
+                globalThis.__onFetchResponse = function(url, status, text) {
                     const resolve = globalThis.__fetchHandlers[url];
                     if (resolve) {
-                        resolve(text);
+                        resolve(new Response(status, text));
                         delete globalThis.__fetchHandlers[url];
                     }
                 };
-                
-                os.fetch = function(url, options = {}) {
-                    const method = (options && options.method) || 'GET';
-                    const body = (options && options.body) || '';
-                    const headers = (options && options.headers) || {};
+
+                function Response(status, body) {
+                    this.status = status != null ? status : 200;
+                    this.ok = this.status >= 200 && this.status < 400;
+                    this.headers = {};
+                    this._body = body || '';
+                }
+                Response.prototype.text = function() { return Promise.resolve(this._body); };
+                Response.prototype.json = function() {
+                    try { return Promise.resolve(JSON.parse(this._body)); }
+                    catch(e) { return Promise.reject(new SyntaxError('Invalid JSON: ' + e.message)); }
+                };
+                Response.prototype.arrayBuffer = function() {
+                    const enc = new TextEncoder();
+                    return Promise.resolve(enc.encode(this._body).buffer);
+                };
+                globalThis.Response = Response;
+
+                os.fetch = function(url, options) {
+                    options = options || {};
+                    const method = options.method || 'GET';
+                    const body = options.body || '';
+                    const headers = options.headers || {};
                     const headersJson = JSON.stringify(headers);
-                    const alpnJson = (options && options.alpn) ? JSON.stringify(options.alpn) : '[]';
-                    return new Promise((resolve, reject) => {
+                    const alpnJson = options.alpn ? JSON.stringify(options.alpn) : '[]';
+                    return new Promise(function(resolve, reject) {
                         globalThis.__fetchHandlers[url] = resolve;
                         os.fetchNative(url, method, body, headersJson, alpnJson);
                     });
