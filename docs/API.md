@@ -93,6 +93,51 @@ Window management and drawing APIs.
 - `os.window.list(): string` — Returns a JSON string of all active windows.
 - `os.window.move(winId, x, y): void` — Moves the window to a new absolute position.
 
+### `os.window.getContext`
+
+`os.window.getContext(winId)` → Canvas context object
+
+Returns a stateful Canvas 2D context for the given window. All drawing targets the window's pixel buffer; call `ctx.flush()` to blit to the framebuffer.
+
+**Properties** (readable and writable):
+- `ctx.fillStyle` — CSS color string (default `'#000000'`). Accepts `#rgb`, `#rrggbb`, `rgb(r,g,b)`, named colors.
+- `ctx.strokeStyle` — CSS color string (default `'#000000'`).
+- `ctx.lineWidth` — stroke width in pixels (default `1`).
+- `ctx.font` — font spec string (default `'16px monospace'`). Size < 16 → 8×16 font; ≥ 16 → 10×20 font.
+
+**Methods:**
+
+| Method | Description |
+|---|---|
+| `fillRect(x,y,w,h)` | Fill rectangle with `fillStyle` |
+| `strokeRect(x,y,w,h)` | Stroke rectangle with `strokeStyle` + `lineWidth` |
+| `clearRect(x,y,w,h)` | Fill with black (0x000000) |
+| `beginPath()` | Clear the current path |
+| `moveTo(x,y)` | Move to point without drawing |
+| `lineTo(x,y)` | Add line segment to path |
+| `arc(cx,cy,r,start,end[,ccw])` | Add arc to path (angles in radians) |
+| `bezierCurveTo(cp1x,cp1y,cp2x,cp2y,x,y)` | Add cubic Bézier curve |
+| `quadraticCurveTo(cpx,cpy,x,y)` | Add quadratic Bézier curve |
+| `rect(x,y,w,h)` | Add rectangle subpath |
+| `closePath()` | Close current subpath |
+| `fill()` | Fill path with `fillStyle` (even-odd rule) |
+| `stroke()` | Stroke path with `strokeStyle` + `lineWidth` |
+| `fillText(text,x,y)` | Draw filled text |
+| `strokeText(text,x,y)` | Same as `fillText` |
+| `drawImage(img,dx,dy)` | Blit image (from `os.image.decode`) at original size |
+| `drawImage(img,dx,dy,dw,dh)` | Blit image scaled to dw×dh |
+| `drawImage(img,sx,sy,sw,sh,dx,dy,dw,dh)` | Crop source then scale |
+| `getImageData(x,y,w,h)` | Returns `{width,height,data:ArrayBuffer}` (RGBA bytes) |
+| `putImageData(imgData,dx,dy)` | Write RGBA ImageData to window buffer |
+| `save()` | Push fillStyle, strokeStyle, lineWidth, font, transform |
+| `restore()` | Pop and restore saved state |
+| `translate(x,y)` | Apply translation to current transform |
+| `rotate(angle)` | Apply rotation (radians) |
+| `scale(x,y)` | Apply scaling |
+| `setTransform(a,b,c,d,e,f)` | Set transform matrix directly |
+| `resetTransform()` | Reset to identity |
+| `flush()` | Blit pixel buffer to framebuffer |
+
 ### `os.mouse`
 - `os.mouse.scroll(): number` — Returns accumulated mouse wheel scroll delta and resets it.
 

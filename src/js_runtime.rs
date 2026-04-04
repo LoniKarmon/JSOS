@@ -245,6 +245,7 @@ lazy_static! {
         m.insert("drawtest.jsos".to_string(), include_str!("jsos/drawtest.jsos").to_string());
         m.insert("calculator.jsos".to_string(), include_str!("jsos/calculator.jsos").to_string());
         m.insert("imageview.jsos".to_string(), include_str!("jsos/imageview.jsos").to_string());
+        m.insert("canvastest.jsos".to_string(), include_str!("jsos/canvastest.jsos").to_string());
         Mutex::new(m)
     };
     static ref CLIPBOARD: Mutex<String> = Mutex::new(String::new());
@@ -508,23 +509,31 @@ pub fn process_has_timers(pid: u32) -> bool {
 
 /// Cleans up all resources (windows, timers) owned by a specific PID.
 pub fn cleanup_process_resources(pid: u32) {
-    // 1. Remove windows
-    {
+    // 1. Remove windows and collect their IDs for canvas cleanup
+    let removed_win_ids: Vec<u32> = {
         let mut buffers = WINDOW_BUFFERS.lock();
         let keys_to_remove: Vec<u32> = buffers.iter()
             .filter(|(_, win)| win.owner_pid == pid)
             .map(|(id, _)| *id)
             .collect();
-            
-        for id in keys_to_remove {
-            buffers.remove(&id);
+        for id in &keys_to_remove {
+            buffers.remove(id);
         }
-    }
-    
+        keys_to_remove
+    };
+
     // 2. Remove timers
     {
         let mut queue = TIMER_QUEUE.lock();
         queue.retain(|entry| entry.pid != pid);
+    }
+
+    // 3. Remove canvas contexts for this process's windows
+    {
+        let mut ctxs = CANVAS_CONTEXTS.lock();
+        for id in removed_win_ids {
+            ctxs.remove(&id);
+        }
     }
 }
 
