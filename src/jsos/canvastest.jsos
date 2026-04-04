@@ -1,6 +1,8 @@
 // Canvas 2D smoke test — draws shapes, text, and exercises the API
-const win = os.window.create(60, 60, 500, 400);
-const ctx = os.window.getContext(win);
+const { Window, Keys } = require('libjsos.js');
+
+const win = new Window(60, 60, 500, 400);
+const ctx = win.getContext();
 
 let drawn = false;
 
@@ -55,16 +57,9 @@ function render() {
     ctx.flush();
 }
 
-globalThis.on_key = function(charCode) {
-    if (charCode === 113 || charCode === 81 || charCode === 27) os.exit();
-};
-
-globalThis.on_ipc = function(msg) {
-    try {
-        const m = JSON.parse(msg);
-        if (m.type === 'RENDER') render();
-        else if (m.type === 'KEY') globalThis.on_key(m.charCode);
-    } catch(e) {}
-};
+win.installIpc({
+    key:    (c) => { if (Keys.isQuit(c)) os.exit(); },
+    render: render,
+});
 
 render();
