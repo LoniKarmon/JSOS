@@ -110,3 +110,28 @@ fn named_color(name: &str) -> (u8, u8, u8) {
         _         => (0, 0, 0),
     }
 }
+
+/// Apply 2D affine matrix [a,b,c,d,e,f] to point (x,y).
+/// Transform: x' = a*x + c*y + e,  y' = b*x + d*y + f
+pub fn transform_point(m: &[f64; 6], x: f64, y: f64) -> (f64, f64) {
+    (m[0]*x + m[2]*y + m[4], m[1]*x + m[3]*y + m[5])
+}
+
+/// Combine two affine transforms: result = a * b (apply b first, then a).
+pub fn multiply_transform(a: &[f64; 6], b: &[f64; 6]) -> [f64; 6] {
+    [
+        a[0]*b[0] + a[2]*b[1],
+        a[1]*b[0] + a[3]*b[1],
+        a[0]*b[2] + a[2]*b[3],
+        a[1]*b[2] + a[3]*b[3],
+        a[0]*b[4] + a[2]*b[5] + a[4],
+        a[1]*b[4] + a[3]*b[5] + a[5],
+    ]
+}
+
+/// Write one pixel to a `0x00RRGGBB` pixel buffer with bounds check.
+#[inline]
+pub fn write_pixel(buf: &mut [u32], bw: usize, bh: usize, x: i32, y: i32, r: u8, g: u8, b: u8) {
+    if x < 0 || y < 0 || x as usize >= bw || y as usize >= bh { return; }
+    buf[y as usize * bw + x as usize] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+}
