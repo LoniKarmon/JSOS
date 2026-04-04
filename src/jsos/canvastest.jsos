@@ -1,5 +1,5 @@
 // Canvas 2D smoke test — draws shapes, text, and exercises the API
-const { Window, Keys } = require('libjsos.js');
+import { Window, Keys } from 'libjsos.js';
 
 const win = new Window(60, 60, 500, 400);
 const ctx = win.getContext();

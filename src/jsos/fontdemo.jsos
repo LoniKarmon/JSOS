@@ -1,6 +1,6 @@
 // fontdemo.jsos — Unicode & Font Size Showcase
 // Demonstrates: Latin, Hebrew, Greek, Symbols (★☀♫✔), and Dingbats via os.window.drawStringUnicode
-const { Window, Keys } = require('libjsos.js');
+import { Window, Keys } from 'libjsos.js';
 
 const WIN_W = 600;
 const WIN_H = 340;

@@ -1,5 +1,5 @@
 // stress_test.jsos - Preemption demo: deliberately hogs CPU, shows spin count
-const { Window, Keys } = require('libjsos.js');
+import { Window, Keys } from 'libjsos.js';
 
 const W = 400, H = 200;
 const win = new Window(200, 150, W, H);
