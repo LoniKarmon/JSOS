@@ -1893,16 +1893,103 @@ unsafe extern "C" fn js_canvas_stroke(
 }
 
 unsafe extern "C" fn js_canvas_fill_text(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 3 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let text  = js_to_rust_string(ctx, *argv.offset(0));
+    let x     = js_val_to_f64(ctx, *argv.offset(1)) as i32;
+    let y     = js_val_to_f64(ctx, *argv.offset(2)) as i32;
+    let style = read_str_prop(ctx, this_val, "fillStyle");
+    let font  = read_str_prop(ctx, this_val, "font");
+    let (r, g, b) = crate::canvas::parse_css_color(&style);
+    // Parse font size: "16px monospace" → extract number before "px"
+    let large = font.split("px").next()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .map(|size| size >= 16.0)
+        .unwrap_or(false);
+    let transform = { CANVAS_CONTEXTS.lock().get(&win_id).map(|c| c.transform) };
+    if let Some(t) = transform {
+        let (tx, ty) = crate::canvas::transform_point(&t, x as f64, y as f64);
+        if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+            crate::framebuffer::draw_string_to_buffer(
+                &mut win.pixels, win.width, win.height,
+                &text, tx as i32, ty as i32, r, g, b, large,
+            );
+        }
+    }
+    js_undefined()
+}
 
 unsafe extern "C" fn js_canvas_stroke_text(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    // strokeText is the same as fillText for JSOS (no separate outline rendering)
+    js_canvas_fill_text(ctx, this_val, argc, argv)
+}
 
+/// drawImage(img, dx, dy)
+/// drawImage(img, dx, dy, dw, dh)
+/// drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh)
+/// `img` = { width: number, height: number, data: ArrayBuffer }
 unsafe extern "C" fn js_canvas_draw_image(
-    _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
-) -> JSValue { js_undefined() }
+    ctx: *mut JSContext, this_val: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 3 { return js_undefined(); }
+    let win_id = read_ctx_id(ctx, this_val);
+    let img = *argv.offset(0);
+
+    // Read img.width, img.height, img.data
+    let cw = js_cstring("width");  let img_w_val = JS_GetPropertyStr(ctx, img, cw.as_ptr() as *const c_char);
+    let ch = js_cstring("height"); let img_h_val = JS_GetPropertyStr(ctx, img, ch.as_ptr() as *const c_char);
+    let cd = js_cstring("data");   let data_val  = JS_GetPropertyStr(ctx, img, cd.as_ptr() as *const c_char);
+    let img_w = js_val_to_i32(ctx, img_w_val) as usize;
+    let img_h = js_val_to_i32(ctx, img_h_val) as usize;
+    JS_FreeValue(ctx, img_w_val);
+    JS_FreeValue(ctx, img_h_val);
+
+    let mut data_size: usize = 0;
+    let data_ptr = JS_GetArrayBuffer(ctx, &mut data_size, data_val);
+    JS_FreeValue(ctx, data_val);
+    if data_ptr.is_null() || img_w == 0 || img_h == 0 { return js_undefined(); }
+    let src = core::slice::from_raw_parts(data_ptr as *const u32, img_w * img_h);
+
+    let (sx, sy, sw, sh, dx, dy, dw, dh) = if argc >= 9 {
+        (
+            js_val_to_f64(ctx, *argv.offset(1)) as usize,
+            js_val_to_f64(ctx, *argv.offset(2)) as usize,
+            js_val_to_f64(ctx, *argv.offset(3)) as usize,
+            js_val_to_f64(ctx, *argv.offset(4)) as usize,
+            js_val_to_f64(ctx, *argv.offset(5)) as i32,
+            js_val_to_f64(ctx, *argv.offset(6)) as i32,
+            js_val_to_f64(ctx, *argv.offset(7)) as usize,
+            js_val_to_f64(ctx, *argv.offset(8)) as usize,
+        )
+    } else if argc >= 5 {
+        (0, 0, img_w, img_h,
+            js_val_to_f64(ctx, *argv.offset(1)) as i32,
+            js_val_to_f64(ctx, *argv.offset(2)) as i32,
+            js_val_to_f64(ctx, *argv.offset(3)) as usize,
+            js_val_to_f64(ctx, *argv.offset(4)) as usize,
+        )
+    } else {
+        (0, 0, img_w, img_h,
+            js_val_to_f64(ctx, *argv.offset(1)) as i32,
+            js_val_to_f64(ctx, *argv.offset(2)) as i32,
+            img_w, img_h,
+        )
+    };
+
+    if let Some(win) = WINDOW_BUFFERS.lock().get_mut(&win_id) {
+        crate::canvas::blit_image(
+            &mut win.pixels, win.width, win.height,
+            src, img_w, img_h,
+            sx, sy, sw, sh,
+            dx, dy, dw, dh,
+        );
+    }
+    js_undefined()
+}
 
 unsafe extern "C" fn js_canvas_get_image_data(
     _ctx: *mut JSContext, _this: JSValue, _argc: c_int, _argv: *const JSValue,
