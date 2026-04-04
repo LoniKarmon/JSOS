@@ -1655,9 +1655,9 @@ fn draw_decoration(
     crate::framebuffer::fill_rect(x, ty + TITLE_H - 1, width, 1, 4, 5, 12);
 
     // macOS-style control dots
-    let dot_cy = ty + 7;
-    crate::framebuffer::fill_circle(x as isize + 10, dot_cy as isize, 6, 180, 55, 55);
-    crate::framebuffer::fill_circle(x as isize + 10, dot_cy as isize, 4, 200, 60, 60);
+    let dot_cy = ty + 9;
+    crate::framebuffer::fill_circle(x as isize + 12, dot_cy as isize, 6, 180, 55, 55);
+    crate::framebuffer::fill_circle(x as isize + 12, dot_cy as isize, 4, 200, 60, 60);
 
     // Title text
     let default_name = alloc::format!("pid {}", owner_pid);
