@@ -126,10 +126,13 @@ pub fn spawn_process(name: &str, js_source: &str) -> u32 {
         list.get(&pid).map(|p| p.sandbox.clone())
     };
     if let Some(sandbox_arc) = result {
-        if let Err(e) = sandbox_arc.lock().eval(js_source) {
+        let mut sandbox = sandbox_arc.lock();
+        if let Err(e) = sandbox.eval(js_source) {
+            drop(sandbox);
             crash_process(pid, name, &e);
             return pid;
         }
+        sandbox.enable_preemption();
     }
 
     // If the script ran to completion without registering any windows or timers,
@@ -264,7 +267,9 @@ pub fn poll_processes() {
                 x, y, flags
             );
             if let Err(e) = sandbox.eval(&script) {
-                crate::serial_println!("[winman] mouse handler error: {}", e);
+                if !e.contains(crate::js_runtime::JS_INTERRUPT_MSG) {
+                    crate::serial_println!("[winman] mouse handler error: {}", e);
+                }
                 break;
             }
         }

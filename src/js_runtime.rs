@@ -554,7 +554,7 @@ pub fn cleanup_process_resources(pid: u32) {
 
 struct TimesliceState {
     start_tick: AtomicU64,
-    budget_ticks: u64,
+    budget_ticks: AtomicU64,
 }
 
 unsafe extern "C" fn js_timeslice_interrupt_handler(
@@ -565,7 +565,7 @@ unsafe extern "C" fn js_timeslice_interrupt_handler(
     let elapsed = crate::interrupts::TICKS
         .load(Ordering::Relaxed)
         .saturating_sub(state.start_tick.load(Ordering::Relaxed));
-    if elapsed > state.budget_ticks { 1 } else { 0 }
+    if elapsed > state.budget_ticks.load(Ordering::Relaxed) { 1 } else { 0 }
 }
 
 pub struct QuickJsSandbox {
@@ -589,8 +589,8 @@ impl QuickJsSandbox {
             }
 
             let timeslice = Box::new(TimesliceState {
-                start_tick: AtomicU64::new(0),
-                budget_ticks: 1, // 1 tick = 10ms at 100 Hz — one timeslice per process per frame
+                start_tick: AtomicU64::new(crate::interrupts::TICKS.load(Ordering::Relaxed)),
+                budget_ticks: AtomicU64::new(u64::MAX), // disabled during init; enabled after spawn
             });
             let opaque = &*timeslice as *const TimesliceState as *mut c_void;
             JS_SetInterruptHandler(rt, Some(js_timeslice_interrupt_handler), opaque);
@@ -765,6 +765,13 @@ impl QuickJsSandbox {
         );
     }
 
+    /// Enable preemption after initialization is complete. Called once after the
+    /// initial app eval succeeds. Sets the real budget and resets the slice start.
+    pub fn enable_preemption(&mut self) {
+        self.timeslice.budget_ticks.store(3, Ordering::Relaxed);
+        self.start_timeslice();
+    }
+
     pub fn eval(&mut self, script: &str) -> Result<String, String> {
         unsafe {
             let filename = js_cstring("<eval>");
@@ -781,8 +788,10 @@ impl QuickJsSandbox {
             if js_is_exception(val) {
                 let exc = JS_GetException(self.ctx);
                 let msg = js_to_rust_string(self.ctx, exc);
-                crate::serial_println!("JS Error: {}", msg);
                 JS_FreeValue(self.ctx, exc);
+                if !msg.contains(JS_INTERRUPT_MSG) {
+                    crate::serial_println!("JS Error: {}", msg);
+                }
                 return Err(msg);
             }
 

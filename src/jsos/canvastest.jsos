@@ -2,45 +2,69 @@
 const win = os.window.create(60, 60, 500, 400);
 const ctx = os.window.getContext(win);
 
-// Background
-ctx.fillStyle = '#1a1a2e';
-ctx.fillRect(0, 0, 500, 400);
+let drawn = false;
 
-// Filled circle via arc path
-ctx.fillStyle = '#e94560';
-ctx.beginPath();
-ctx.arc(250, 150, 80, 0, Math.PI * 2);
-ctx.fill();
+function draw() {
+    if (drawn) return;
+    drawn = true;
 
-// Stroked triangle
-ctx.strokeStyle = '#00d2ff';
-ctx.lineWidth = 3;
-ctx.beginPath();
-ctx.moveTo(100, 320);
-ctx.lineTo(250, 80);
-ctx.lineTo(400, 320);
-ctx.closePath();
-ctx.stroke();
+    // Background
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, 500, 400);
 
-// Text
-ctx.fillStyle = '#ffffff';
-ctx.font = '16px monospace';
-ctx.fillText('Canvas 2D', 190, 370);
+    // Filled circle via arc path
+    ctx.fillStyle = '#e94560';
+    ctx.beginPath();
+    ctx.arc(250, 150, 80, 0, Math.PI * 2);
+    ctx.fill();
 
-// Bezier curve
-ctx.strokeStyle = '#ffd700';
-ctx.lineWidth = 2;
-ctx.beginPath();
-ctx.moveTo(20, 200);
-ctx.bezierCurveTo(100, 50, 400, 350, 480, 200);
-ctx.stroke();
+    // Stroked triangle
+    ctx.strokeStyle = '#00d2ff';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(100, 320);
+    ctx.lineTo(250, 80);
+    ctx.lineTo(400, 320);
+    ctx.closePath();
+    ctx.stroke();
 
-// Save/restore with transform
-ctx.save();
-ctx.translate(250, 200);
-ctx.rotate(Math.PI / 4);
-ctx.fillStyle = 'rgba(255, 100, 0, 1)';
-ctx.fillRect(-40, -10, 80, 20);
-ctx.restore();
+    // Text
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '16px monospace';
+    ctx.fillText('Canvas 2D', 190, 370);
 
-ctx.flush();
+    // Bezier curve
+    ctx.strokeStyle = '#ffd700';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(20, 200);
+    ctx.bezierCurveTo(100, 50, 400, 350, 480, 200);
+    ctx.stroke();
+
+    // Save/restore with transform
+    ctx.save();
+    ctx.translate(250, 200);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = 'rgba(255, 100, 0, 1)';
+    ctx.fillRect(-40, -10, 80, 20);
+    ctx.restore();
+}
+
+function render() {
+    draw();
+    ctx.flush();
+}
+
+globalThis.on_key = function(charCode) {
+    if (charCode === 113 || charCode === 81 || charCode === 27) os.exit();
+};
+
+globalThis.on_ipc = function(msg) {
+    try {
+        const m = JSON.parse(msg);
+        if (m.type === 'RENDER') render();
+        else if (m.type === 'KEY') globalThis.on_key(m.charCode);
+    } catch(e) {}
+};
+
+render();
