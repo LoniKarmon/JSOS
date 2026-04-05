@@ -693,6 +693,49 @@ impl QuickJsSandbox {
                     });
                 };
 
+                // FTP Session Polyfill
+                globalThis.__ftpHandlers = {};
+                globalThis.__onFtpResult = function(sessionId, success, data) {
+                    const handlers = globalThis.__ftpHandlers[sessionId];
+                    if (handlers && handlers.length > 0) {
+                        const handler = handlers.shift();
+                        if (success) {
+                            handler.resolve(data);
+                        } else {
+                            handler.reject(new Error(data));
+                        }
+                    }
+                };
+                os.ftp.connect = function(server, options) {
+                    options = options || {};
+                    const user = options.user || 'anonymous';
+                    const pass = options.pass || '';
+                    const sessionId = os.ftp.connectNative(server, user, pass);
+                    if (sessionId < 0) return null;
+
+                    globalThis.__ftpHandlers[sessionId] = [];
+
+                    function ftpCommand(type, arg) {
+                        return new Promise(function(resolve, reject) {
+                            globalThis.__ftpHandlers[sessionId].push({ resolve: resolve, reject: reject });
+                            os.ftp.commandNative(sessionId, type, arg);
+                        });
+                    }
+
+                    return {
+                        list: function(path) { return ftpCommand('list', path || '/'); },
+                        get: function(remotePath, storeKey) { return ftpCommand('get', remotePath + '|' + storeKey); },
+                        put: function(remotePath, storeKey) { return ftpCommand('put', remotePath + '|' + storeKey); },
+                        mkdir: function(path) { return ftpCommand('mkdir', path); },
+                        delete: function(path) { return ftpCommand('delete', path); },
+                        close: function() {
+                            return ftpCommand('close', '').then(function() {
+                                delete globalThis.__ftpHandlers[sessionId];
+                            });
+                        }
+                    };
+                };
+
                 // Timer Polyfills
                 globalThis.__timers = {};
                 globalThis.__timerCounter = 0;
@@ -1031,6 +1074,12 @@ unsafe fn register_os_namespace(ctx: *mut JSContext) {
     set_func(ctx, tftp, "putNative", js_os_tftp_put, 3);
     set_prop_obj(ctx, os, "tftp", tftp);
 
+    // Build os.ftp sub-object
+    let ftp = JS_NewObject(ctx);
+    set_func(ctx, ftp, "connectNative", js_os_ftp_connect, 3);
+    set_func(ctx, ftp, "commandNative", js_os_ftp_command, 3);
+    set_prop_obj(ctx, os, "ftp", ftp);
+
     set_func(ctx, os, "log", js_os_log, 1);
     set_func(ctx, os, "spawn", js_os_spawn, 1);
     set_func(ctx, os, "processes", js_os_ps, 0);
@@ -1288,6 +1337,62 @@ unsafe extern "C" fn js_os_tftp_put(
         JS_FreeValue(ctx, global);
         crate::net::start_tftp_put(pid, &server, &remote_path, &store_key);
     }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_os_ftp_connect(
+    ctx: *mut JSContext, _this: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 3 { return js_float(-1.0); }
+    let server = js_to_rust_string(ctx, *argv.offset(0));
+    let user   = js_to_rust_string(ctx, *argv.offset(1));
+    let pass   = js_to_rust_string(ctx, *argv.offset(2));
+    let global = JS_GetGlobalObject(ctx);
+    let pid_prop = js_cstring("__PID");
+    let pid_val = JS_GetPropertyStr(ctx, global, pid_prop.as_ptr() as *const c_char);
+    let pid = js_val_to_i32(ctx, pid_val) as u32;
+    JS_FreeValue(ctx, pid_val);
+    JS_FreeValue(ctx, global);
+    let session_id = crate::net::ftp_connect(pid, &server, &user, &pass);
+    js_float(session_id as f64)
+}
+
+unsafe extern "C" fn js_os_ftp_command(
+    ctx: *mut JSContext, _this: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc < 3 { return js_undefined(); }
+    let session_id = js_val_to_f64(ctx, *argv.offset(0)) as u64;
+    let cmd_type   = js_to_rust_string(ctx, *argv.offset(1));
+    let arg        = js_to_rust_string(ctx, *argv.offset(2));
+
+    use crate::net::ftp_job::{FtpCommand, FtpCommandKind};
+
+    let kind = match cmd_type.as_str() {
+        "list" => FtpCommandKind::List(arg),
+        "get" => {
+            let mut parts = arg.splitn(2, '|');
+            let remote = parts.next().unwrap_or("").to_string();
+            let key    = parts.next().unwrap_or("").to_string();
+            FtpCommandKind::Get(remote, key)
+        }
+        "put" => {
+            let mut parts = arg.splitn(2, '|');
+            let remote = parts.next().unwrap_or("").to_string();
+            let key    = parts.next().unwrap_or("").to_string();
+            FtpCommandKind::Put(remote, key)
+        }
+        "mkdir"  => FtpCommandKind::Mkdir(arg),
+        "delete" => FtpCommandKind::Delete(arg),
+        "close"  => FtpCommandKind::Close,
+        _ => return js_undefined(),
+    };
+
+    // Use the session_id as the callback identifier so results route correctly.
+    let cmd = FtpCommand {
+        kind,
+        callback_id: alloc::format!("{}", session_id),
+    };
+    crate::net::ftp_command(session_id, cmd);
     js_undefined()
 }
 
