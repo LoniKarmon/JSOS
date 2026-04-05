@@ -31,6 +31,17 @@ pub fn virt_to_phys(virt: u64) -> u32 {
     phys_u64 as u32
 }
 
+/// Translate a virtual address to its 64-bit physical address for DMA use.
+/// Unlike `virt_to_phys`, this does not assert 32-bit address range —
+/// suitable for devices that support 64-bit DMA (e.g., e1000e).
+pub fn virt_to_phys64(virt: u64) -> u64 {
+    let offset = PHYS_MEM_OFFSET.load(Ordering::Relaxed);
+    if offset == 0 {
+        panic!("virt_to_phys64 called before PHYS_MEM_OFFSET initialized");
+    }
+    unsafe { walk_page_tables(virt, offset) }
+}
+
 /// Walk the 4-level page table hierarchy to translate `virt` → physical address.
 ///
 /// Uses shared (`&`) references to each level's `PageTable`, so multiple
