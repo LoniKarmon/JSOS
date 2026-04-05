@@ -126,7 +126,8 @@ function drawContent() {
         return;
     }
 
-    paint.paint(pageCmds, win.id, scrollY, CONTENT_H);
+    // Layout uses y=0 relative coords; offset by CONTENT_Y for display
+    paint.paint(pageCmds, win.id, scrollY - CONTENT_Y, CONTENT_H);
 }
 
 // ── Full Render ──────────────────────────────────────────────────────────────
@@ -195,7 +196,7 @@ async function navigate(url) {
         var domRoot = dom.parseHTML(pageHtml);
         var rules = css.parseCSS(domRoot._embeddedCSS || '');
         css.applyStyles(domRoot, rules, {});
-        var result = layout.layoutDOM(domRoot, { x: 0, y: CONTENT_Y, w: W, h: CONTENT_H });
+        var result = layout.layoutDOM(domRoot, { x: 0, y: 0, w: W, h: CONTENT_H });
         pageCmds = result.cmds;
         pageLinks = result.links;
         pageTotalHeight = result.totalHeight;
@@ -217,7 +218,7 @@ async function navigate(url) {
         var errDom = dom.parseHTML(errorHtml);
         var errRules = css.parseCSS(errDom._embeddedCSS || '');
         css.applyStyles(errDom, errRules, {});
-        var errResult = layout.layoutDOM(errDom, { x: 0, y: CONTENT_Y, w: W, h: CONTENT_H });
+        var errResult = layout.layoutDOM(errDom, { x: 0, y: 0, w: W, h: CONTENT_H });
         pageCmds = errResult.cmds;
         pageLinks = errResult.links;
         pageTotalHeight = errResult.totalHeight;
