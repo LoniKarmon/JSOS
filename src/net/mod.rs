@@ -1097,6 +1097,7 @@ pub fn poll_network() {
             let escaped = body_str
                 .replace('\\', "\\\\")
                 .replace('`', "\\`")
+                .replace("${", "\\${")
                 .replace('\r', "");
 
             let script = alloc::format!(
