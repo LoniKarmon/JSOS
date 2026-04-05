@@ -154,7 +154,9 @@ async function navigate(url) {
     render();
 
     try {
-        var resp = await os.fetch(url);
+        var resp = await os.fetch(url, {
+            headers: { 'User-Agent': 'JSOS-Browser/1.0 (bare-metal OS; https://github.com/LoniKarmon/JSOS)' }
+        });
         var html = (typeof resp === 'object' && resp.text) ? await resp.text() : String(resp);
         pageHtml = sanitizeHtml(html);
 
