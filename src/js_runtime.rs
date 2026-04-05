@@ -1451,7 +1451,12 @@ unsafe extern "C" fn js_os_exit(ctx: *mut JSContext, _this: JSValue, argc: c_int
     };
 
     if pid > 0 {
-        crate::process::kill_process_and_cleanup(pid);
+        // Defer cleanup — just mark as dead. Actual resource cleanup happens
+        // in reap_dead_processes() outside any sandbox locks, avoiding deadlocks
+        // when os.exit() is called from key/IPC handlers.
+        if let Some(process) = crate::process::PROCESS_LIST.lock().get_mut(&pid) {
+            process.dead = true;
+        }
     }
     js_undefined()
 }

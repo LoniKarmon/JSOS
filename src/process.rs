@@ -262,8 +262,8 @@ pub fn spawn_process(name: &str, js_source: &str) -> u32 {
 /// (windows, timers). The sandbox itself is dropped by `reap_dead_processes`
 /// from the main loop, outside of any interrupt context.
 pub fn kill_process_and_cleanup(pid: u32) {
-    crate::js_runtime::cleanup_process_resources(pid);
-
+    // Just mark as dead — actual cleanup happens in reap_dead_processes()
+    // to avoid deadlocks when called from inside sandbox eval.
     if let Some(process) = PROCESS_LIST.lock().get_mut(&pid) {
         process.dead = true;
     }
@@ -295,10 +295,14 @@ pub fn reap_dead_processes() {
         return;
     }
 
-    // Cancel any in-flight network jobs for these processes, and close sockets.
+    // Clean up resources for dead processes (windows, timers, canvas, network).
+    // Must happen while PROCESS_LIST is held to prevent races.
+    drop(list); // release PROCESS_LIST before taking other locks
     for pid in &dead_pids {
+        crate::js_runtime::cleanup_process_resources(*pid);
         crate::net::cleanup_process_network(*pid);
     }
+    let mut list = PROCESS_LIST.lock();
 
     list.retain(|_pid, process| !process.dead);
 
