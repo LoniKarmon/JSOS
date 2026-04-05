@@ -48,16 +48,14 @@ macro_rules! extension_group {
 
                     #[allow(unreachable_patterns)]
                     other => {
-                        warn!("Read unexpected ExtensionType: {:?}", other);
-                        // Section 4.2.  Extensions
-                        // If an implementation receives an extension
-                        // which it recognizes and which is not specified for the message in
-                        // which it appears, it MUST abort the handshake with an
-                        // "illegal_parameter" alert.
-                        Err(crate::TlsError::AbortHandshake(
-                            crate::alert::AlertLevel::Fatal,
-                            crate::alert::AlertDescription::IllegalParameter,
-                        ))
+                        warn!("Skipping unexpected ExtensionType: {:?}", other);
+                        // Be lenient: skip unrecognised extensions rather than
+                        // aborting.  The ext_data slice was already consumed by
+                        // `buf.slice(data_len)` above, so the parse position is
+                        // correct.  Return UnknownExtensionType so parse_vector
+                        // can ignore it the same way it ignores truly unknown
+                        // type codes.
+                        Err(crate::TlsError::UnknownExtensionType)
                     }
                 }
             }
