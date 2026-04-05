@@ -216,7 +216,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let has_active_fetches = !os::net::FETCH_JOBS.lock().is_empty();
         let has_active_servers = !os::net::SERVER_JOBS.lock().is_empty();
         let has_active_ws = !os::net::WEBSOCKET_JOBS.lock().is_empty();
-        if !has_active_fetches && !has_active_servers && !has_active_ws {
+        let has_active_tftp = !os::net::TFTP_JOBS.lock().is_empty();
+        if !has_active_fetches && !has_active_servers && !has_active_ws && !has_active_tftp {
             x86_64::instructions::hlt();
         }
     }

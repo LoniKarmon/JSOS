@@ -25,6 +25,7 @@ use alloc::vec::Vec;
 use alloc::format;
 
 pub mod rtl8139;
+pub mod tftp_job;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetError {
@@ -108,6 +109,7 @@ lazy_static! {
     pub static ref SERVER_JOBS: Mutex<alloc::vec::Vec<Box<ServerJob>>> = Mutex::new(alloc::vec::Vec::new());
     pub static ref LISTENERS: Mutex<alloc::vec::Vec<ListeningSocket>> = Mutex::new(alloc::vec::Vec::new());
     pub static ref CUSTOM_HTTP_RESPONSE: Mutex<Option<alloc::string::String>> = Mutex::new(None);
+    pub static ref TFTP_JOBS: Mutex<alloc::vec::Vec<Box<tftp_job::TftpJob>>> = Mutex::new(alloc::vec::Vec::new());
 }
 
 pub fn set_http_response(html: alloc::string::String) {
@@ -394,6 +396,20 @@ pub fn start_listen(pid: u32, port: u16) {
     }
 }
 
+pub fn start_tftp_get(pid: u32, server_ip: &str, remote_path: &str, store_key: &str) {
+    let mut sockets_guard = SOCKETS.lock();
+    if let Some(ref mut sockets) = *sockets_guard {
+        tftp_job::start_tftp_get(pid, server_ip, remote_path, store_key, sockets);
+    }
+}
+
+pub fn start_tftp_put(pid: u32, server_ip: &str, remote_path: &str, store_key: &str) {
+    let mut sockets_guard = SOCKETS.lock();
+    if let Some(ref mut sockets) = *sockets_guard {
+        tftp_job::start_tftp_put(pid, server_ip, remote_path, store_key, sockets);
+    }
+}
+
 pub fn start_fetch(pid: u32, url: &str, method: &str, body: &str, headers_json: &str, alpn_protocols: Option<alloc::vec::Vec<alloc::string::String>>) {
     let is_https = url.starts_with("https://");
     let url_body = if is_https {
@@ -566,6 +582,9 @@ pub fn poll_network() {
     }
     let nic = nic_guard.as_mut().unwrap();
     iface.poll(get_timestamp(), nic, sockets);
+
+    // Drive TFTP jobs
+    tftp_job::poll_tftp_jobs(sockets, current_ticks);
 
     // Drive TCP servers
     poll_server_sockets(sockets, current_ticks);
@@ -1722,6 +1741,23 @@ pub fn cleanup_process_network(pid: u32) {
             let socket = sockets.get_mut::<TcpSocket>(l.handle);
             socket.abort();
             sockets.remove(l.handle);
+        } else {
+            i += 1;
+        }
+    }
+
+    // Clean up TFTP jobs
+    let mut tftp_jobs = TFTP_JOBS.lock();
+    let mut i = 0;
+    while i < tftp_jobs.len() {
+        if tftp_jobs[i].pid == pid {
+            let job = tftp_jobs.remove(i);
+            // Only remove the socket if the job hasn't already cleaned it up
+            if !job.done {
+                let socket = sockets.get_mut::<smoltcp::socket::udp::Socket>(job.udp_handle);
+                socket.close();
+                sockets.remove(job.udp_handle);
+            }
         } else {
             i += 1;
         }
