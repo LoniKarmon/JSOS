@@ -61,7 +61,77 @@ function rewriteWikipediaUrl(url) {
     return url;
 }
 
-var MAX_HTML_SIZE = 150000; // Cap HTML at 150KB to avoid freezing QuickJS
+// ── Text extraction for large pages ──────────────────────────────────────────
+function extractReadableHtml(html) {
+    // Strip everything except readable content
+    var s = html;
+    s = s.replace(/<script[\s\S]*?<\/script>/gi, '');
+    s = s.replace(/<style[\s\S]*?<\/style>/gi, '');
+    s = s.replace(/<nav[\s\S]*?<\/nav>/gi, '');
+    s = s.replace(/<footer[\s\S]*?<\/footer>/gi, '');
+    s = s.replace(/<header[\s\S]*?<\/header>/gi, '');
+    s = s.replace(/<svg[\s\S]*?<\/svg>/gi, '');
+    s = s.replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+
+    // Extract title
+    var title = '';
+    var tm = s.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    if (tm) title = tm[1].replace(/<[^>]+>/g, '').trim();
+
+    // Convert headings to preserved headings
+    s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, function(_, level, content) {
+        return '\n##H' + level + '## ' + content.replace(/<[^>]+>/g, '').trim() + '\n';
+    });
+
+    // Convert <p>, <div>, <li> to line breaks
+    s = s.replace(/<\/(?:p|div|li|tr|br)[^>]*>/gi, '\n');
+    s = s.replace(/<br\s*\/?>/gi, '\n');
+
+    // Extract links
+    var linkMap = {};
+    s = s.replace(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, function(_, href, text) {
+        var cleanText = text.replace(/<[^>]+>/g, '').trim();
+        if (cleanText && href) linkMap[cleanText] = href;
+        return cleanText;
+    });
+
+    // Strip all remaining tags
+    s = s.replace(/<[^>]+>/g, '');
+    // Collapse whitespace
+    s = s.replace(/[ \t]+/g, ' ');
+    s = s.replace(/\n[ \t]+/g, '\n');
+    s = s.replace(/\n{3,}/g, '\n\n');
+    s = s.trim();
+
+    // Truncate to ~15KB of text
+    if (s.length > 15000) s = s.substring(0, 15000) + '\n\n[Content truncated]';
+
+    // Rebuild as simple HTML
+    var lines = s.split('\n');
+    var out = '<html><head><style>' +
+        'body { background-color: #0a0a1a; color: #c8dcff; padding: 8px; }' +
+        'h1 { color: #6496ff; margin: 8px; }' +
+        'h2 { color: #96c8ff; margin: 6px; }' +
+        'h3 { color: #64dcff; margin: 4px; }' +
+        'p { margin: 2px; }' +
+        'a { color: #64dcff; }' +
+        '.dim { color: #607090; }' +
+        '</style></head><body>';
+    if (title) out += '<h1>' + title + '</h1>';
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line) continue;
+        var hm = line.match(/^##H(\d)## (.+)/);
+        if (hm) {
+            out += '<h' + hm[1] + '>' + hm[2] + '</h' + hm[1] + '>';
+        } else {
+            out += '<p>' + line + '</p>';
+        }
+    }
+    out += '<p class="dim">Page text extracted from ' + (lines.length) + ' lines (original HTML too large for full rendering).</p>';
+    out += '</body></html>';
+    return out;
+}
 
 function resolveUrl(href, baseUrl) {
     if (!href) return '';
@@ -203,10 +273,10 @@ async function navigate(url) {
             }
         }
 
-        // Safety cap to prevent QuickJS from freezing
-        if (html.length > MAX_HTML_SIZE) {
-            console.log('[browser] Truncating HTML from ' + html.length + ' to ' + MAX_HTML_SIZE);
-            html = html.substring(0, MAX_HTML_SIZE);
+        // For large pages, extract text instead of full HTML rendering
+        // (QuickJS is too slow for DOM/CSS/layout on 80KB+ pages)
+        if (html.length > 30000) {
+            html = extractReadableHtml(html);
         }
         pageHtml = sanitizeHtml(html);
 

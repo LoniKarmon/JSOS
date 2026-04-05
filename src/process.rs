@@ -469,9 +469,9 @@ pub fn poll_processes() {
             }
 
             if err.is_none() {
-                // Disable preemption for pending jobs — async continuations
-                // (like parsing fetched HTML) can be expensive in QuickJS.
-                sandbox.start_timeslice_with_budget(u64::MAX / 2);
+                // Generous budget for pending jobs — async continuations
+                // like small page rendering need room to complete.
+                sandbox.start_timeslice_with_budget(500);
                 if let Err(e) = sandbox.execute_pending_jobs() {
                     err = Some(e);
                 } else {
