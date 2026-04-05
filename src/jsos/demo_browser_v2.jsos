@@ -24,7 +24,7 @@ const T = Theme.dark();
 // ── State ────────────────────────────────────────────────────────────────────
 const win = new Window(30, 20, W, H);
 
-var urlText = 'https://en.m.wikipedia.org/wiki/Main_Page';
+var urlText = 'https://en.wikipedia.org/wiki/Main_Page';
 var urlCursor = urlText.length;
 var urlFocused = true;
 var statusText = 'Type a URL and press Enter';
@@ -53,12 +53,15 @@ function sanitizeHtml(html) {
 }
 
 function rewriteWikipediaUrl(url) {
-    var m = url.match(/https?:\/\/(\w+)\.wikipedia\.org\/wiki\/(.+)/);
+    // Use Wikipedia's REST API for summary — returns small, clean HTML
+    var m = url.match(/https?:\/\/(\w+)\.(?:m\.)?wikipedia\.org\/wiki\/(.+)/);
     if (m) {
-        return 'https://' + m[1] + '.m.wikipedia.org/wiki/' + m[2];
+        return 'https://' + m[1] + '.wikipedia.org/api/rest_v1/page/summary/' + m[2];
     }
     return url;
 }
+
+var MAX_HTML_SIZE = 50000; // Cap HTML at 50KB to avoid freezing QuickJS
 
 function resolveUrl(href, baseUrl) {
     if (!href) return '';
@@ -157,8 +160,36 @@ async function navigate(url) {
         var resp = await os.fetch(url, {
             headers: { 'User-Agent': 'JSOS-Browser/1.0 (bare-metal OS; https://github.com/LoniKarmon/JSOS)' }
         });
-        var html = (typeof resp === 'object' && resp.text) ? await resp.text() : String(resp);
-        if (!html) html = '';
+        var body = (typeof resp === 'object' && resp.text) ? await resp.text() : String(resp);
+        if (!body) body = '';
+
+        // Wikipedia REST API returns JSON — extract HTML content
+        var html = body;
+        if (url.indexOf('/api/rest_v1/page/summary/') !== -1) {
+            try {
+                var data = JSON.parse(body);
+                var title = data.title || '';
+                var extract = data.extract_html || data.extract || '';
+                html = '<html><head><style>' +
+                    'body { background-color: #0a0a1a; color: #c8dcff; padding: 8px; }' +
+                    'h1 { color: #6496ff; margin: 8px; }' +
+                    'p { margin: 4px; }' +
+                    'a { color: #64dcff; }' +
+                    '</style></head><body>' +
+                    '<h1>' + title + '</h1>' +
+                    extract +
+                    '<p></p><p style="color:#607090">Wikipedia article summary loaded via REST API.</p>' +
+                    '</body></html>';
+            } catch(e) {
+                console.log('[browser] Not JSON, treating as HTML');
+            }
+        }
+
+        // Safety cap to prevent QuickJS from freezing
+        if (html.length > MAX_HTML_SIZE) {
+            console.log('[browser] Truncating HTML from ' + html.length + ' to ' + MAX_HTML_SIZE);
+            html = html.substring(0, MAX_HTML_SIZE);
+        }
         pageHtml = sanitizeHtml(html);
 
         var domRoot = dom.parseHTML(pageHtml);

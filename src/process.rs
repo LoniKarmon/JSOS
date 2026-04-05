@@ -458,9 +458,8 @@ pub fn poll_processes() {
             }
 
             if err.is_none() {
-                // Disable preemption for pending jobs — async work like parsing
-                // 230KB of Wikipedia HTML can take many seconds in QuickJS.
-                sandbox.start_timeslice_with_budget(u64::MAX / 2);
+                // Give pending jobs a generous budget for async work.
+                sandbox.start_timeslice_with_budget(5000);
                 if let Err(e) = sandbox.execute_pending_jobs() {
                     err = Some(e);
                 } else {
