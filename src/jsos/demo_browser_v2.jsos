@@ -61,7 +61,7 @@ function rewriteWikipediaUrl(url) {
     return url;
 }
 
-var MAX_HTML_SIZE = 50000; // Cap HTML at 50KB to avoid freezing QuickJS
+var MAX_HTML_SIZE = 150000; // Cap HTML at 150KB to avoid freezing QuickJS
 
 function resolveUrl(href, baseUrl) {
     if (!href) return '';
