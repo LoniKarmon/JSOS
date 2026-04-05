@@ -232,6 +232,17 @@ pub fn poll_tftp_jobs(sockets: &mut SocketSet, current_ticks: u64) {
         i += 1;
     }
 
+    // Collect results for done jobs before removing them
+    {
+        let mut results = super::TFTP_RESULTS.lock();
+        for job in jobs.iter() {
+            if job.done {
+                let result = String::from(job.result.as_deref().unwrap_or("Error: unknown"));
+                results.push((job.pid, job.store_key.clone(), result));
+            }
+        }
+    }
+
     // Remove finished jobs
     jobs.retain(|j| !j.done);
 }

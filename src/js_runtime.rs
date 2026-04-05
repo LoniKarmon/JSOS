@@ -667,6 +667,32 @@ impl QuickJsSandbox {
                     });
                 };
 
+                // TFTP Promise Polyfill
+                globalThis.__tftpHandlers = {};
+                globalThis.__onTftpResult = function(storeKey, result) {
+                    const handler = globalThis.__tftpHandlers[storeKey];
+                    if (handler) {
+                        delete globalThis.__tftpHandlers[storeKey];
+                        if (result.startsWith('OK')) {
+                            handler.resolve(result);
+                        } else {
+                            handler.reject(new Error(result));
+                        }
+                    }
+                };
+                os.tftp.get = function(server, remotePath, storeKey) {
+                    return new Promise(function(resolve, reject) {
+                        globalThis.__tftpHandlers[storeKey] = { resolve: resolve, reject: reject };
+                        os.tftp.getNative(server, remotePath, storeKey);
+                    });
+                };
+                os.tftp.put = function(server, remotePath, storeKey) {
+                    return new Promise(function(resolve, reject) {
+                        globalThis.__tftpHandlers[storeKey] = { resolve: resolve, reject: reject };
+                        os.tftp.putNative(server, remotePath, storeKey);
+                    });
+                };
+
                 // Timer Polyfills
                 globalThis.__timers = {};
                 globalThis.__timerCounter = 0;
@@ -999,6 +1025,12 @@ unsafe fn register_os_namespace(ctx: *mut JSContext) {
     set_func(ctx, websocket, "state", js_os_websocket_state, 1);
     set_prop_obj(ctx, os, "websocket", websocket);
 
+    // Build os.tftp sub-object
+    let tftp = JS_NewObject(ctx);
+    set_func(ctx, tftp, "getNative", js_os_tftp_get, 3);
+    set_func(ctx, tftp, "putNative", js_os_tftp_put, 3);
+    set_prop_obj(ctx, os, "tftp", tftp);
+
     set_func(ctx, os, "log", js_os_log, 1);
     set_func(ctx, os, "spawn", js_os_spawn, 1);
     set_func(ctx, os, "processes", js_os_ps, 0);
@@ -1219,6 +1251,42 @@ unsafe extern "C" fn js_os_fetch(ctx: *mut JSContext, _this: JSValue, argc: c_in
         JS_FreeValue(ctx, global);
 
         crate::net::start_fetch(pid, &url, &method, &body, &headers_json, alpn_protocols);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_os_tftp_get(
+    ctx: *mut JSContext, _this: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc >= 3 {
+        let server = js_to_rust_string(ctx, *argv.offset(0));
+        let remote_path = js_to_rust_string(ctx, *argv.offset(1));
+        let store_key = js_to_rust_string(ctx, *argv.offset(2));
+        let global = JS_GetGlobalObject(ctx);
+        let pid_prop = js_cstring("__PID");
+        let pid_val = JS_GetPropertyStr(ctx, global, pid_prop.as_ptr() as *const c_char);
+        let pid = js_val_to_i32(ctx, pid_val) as u32;
+        JS_FreeValue(ctx, pid_val);
+        JS_FreeValue(ctx, global);
+        crate::net::start_tftp_get(pid, &server, &remote_path, &store_key);
+    }
+    js_undefined()
+}
+
+unsafe extern "C" fn js_os_tftp_put(
+    ctx: *mut JSContext, _this: JSValue, argc: c_int, argv: *const JSValue,
+) -> JSValue {
+    if argc >= 3 {
+        let server = js_to_rust_string(ctx, *argv.offset(0));
+        let remote_path = js_to_rust_string(ctx, *argv.offset(1));
+        let store_key = js_to_rust_string(ctx, *argv.offset(2));
+        let global = JS_GetGlobalObject(ctx);
+        let pid_prop = js_cstring("__PID");
+        let pid_val = JS_GetPropertyStr(ctx, global, pid_prop.as_ptr() as *const c_char);
+        let pid = js_val_to_i32(ctx, pid_val) as u32;
+        JS_FreeValue(ctx, pid_val);
+        JS_FreeValue(ctx, global);
+        crate::net::start_tftp_put(pid, &server, &remote_path, &store_key);
     }
     js_undefined()
 }

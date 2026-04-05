@@ -110,6 +110,7 @@ lazy_static! {
     pub static ref LISTENERS: Mutex<alloc::vec::Vec<ListeningSocket>> = Mutex::new(alloc::vec::Vec::new());
     pub static ref CUSTOM_HTTP_RESPONSE: Mutex<Option<alloc::string::String>> = Mutex::new(None);
     pub static ref TFTP_JOBS: Mutex<alloc::vec::Vec<Box<tftp_job::TftpJob>>> = Mutex::new(alloc::vec::Vec::new());
+    pub static ref TFTP_RESULTS: Mutex<alloc::vec::Vec<(u32, alloc::string::String, alloc::string::String)>> = Mutex::new(alloc::vec::Vec::new());
 }
 
 pub fn set_http_response(html: alloc::string::String) {
@@ -1061,6 +1062,28 @@ pub fn poll_network() {
                 "if (typeof globalThis.__onFetchResponse === 'function') \
                  {{ globalThis.__onFetchResponse('{}', {}, `{}`); }}",
                 job.url, status_code, escaped
+            );
+            let _ = sandbox_arc.lock().eval(&script);
+        }
+    }
+
+    // Deliver TFTP results to JS callbacks
+    let tftp_results: alloc::vec::Vec<(u32, alloc::string::String, alloc::string::String)> = {
+        let mut results = TFTP_RESULTS.lock();
+        core::mem::take(&mut *results)
+    };
+    for (pid, store_key, result) in tftp_results {
+        let sandbox_arc = {
+            let list = crate::process::PROCESS_LIST.lock();
+            list.get(&pid).map(|p| p.sandbox.clone())
+        };
+        if let Some(sandbox_arc) = sandbox_arc {
+            let escaped_key = store_key.replace('\\', "\\\\").replace('\'', "\\'");
+            let escaped_result = result.replace('\\', "\\\\").replace('\'', "\\'");
+            let script = alloc::format!(
+                "if (typeof globalThis.__onTftpResult === 'function') \
+                 {{ globalThis.__onTftpResult('{}', '{}'); }}",
+                escaped_key, escaped_result
             );
             let _ = sandbox_arc.lock().eval(&script);
         }
