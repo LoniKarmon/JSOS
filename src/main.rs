@@ -88,6 +88,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial_println!("Frame allocator constructed");
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
     serial_println!("Heap init complete");
+    os::init_logger();
 
     // Disable Intel VT-d / AMD IOMMU translations so DMA-capable devices
     // (xHCI, etc.) can write to kernel memory without IOMMU domain setup.
@@ -217,7 +218,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let has_active_servers = !os::net::SERVER_JOBS.lock().is_empty();
         let has_active_ws = !os::net::WEBSOCKET_JOBS.lock().is_empty();
         let has_active_tftp = !os::net::TFTP_JOBS.lock().is_empty();
-        if !has_active_fetches && !has_active_servers && !has_active_ws && !has_active_tftp {
+        let has_active_ftp = !os::net::FTP_SESSIONS.lock().is_empty();
+        if !has_active_fetches && !has_active_servers && !has_active_ws && !has_active_tftp && !has_active_ftp {
             x86_64::instructions::hlt();
         }
     }

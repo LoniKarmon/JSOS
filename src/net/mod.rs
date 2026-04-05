@@ -26,6 +26,7 @@ use alloc::format;
 
 pub mod rtl8139;
 pub mod tftp_job;
+pub mod ftp_job;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetError {
@@ -111,6 +112,9 @@ lazy_static! {
     pub static ref CUSTOM_HTTP_RESPONSE: Mutex<Option<alloc::string::String>> = Mutex::new(None);
     pub static ref TFTP_JOBS: Mutex<alloc::vec::Vec<Box<tftp_job::TftpJob>>> = Mutex::new(alloc::vec::Vec::new());
     pub static ref TFTP_RESULTS: Mutex<alloc::vec::Vec<(u32, alloc::string::String, alloc::string::String)>> = Mutex::new(alloc::vec::Vec::new());
+    pub static ref FTP_SESSIONS: Mutex<alloc::collections::BTreeMap<u64, Box<ftp_job::FtpSession>>> = Mutex::new(alloc::collections::BTreeMap::new());
+    /// (pid, session_id, success, data)
+    pub static ref FTP_RESULTS: Mutex<alloc::vec::Vec<(u32, u64, bool, alloc::string::String)>> = Mutex::new(alloc::vec::Vec::new());
 }
 
 pub fn set_http_response(html: alloc::string::String) {
@@ -411,6 +415,21 @@ pub fn start_tftp_put(pid: u32, server_ip: &str, remote_path: &str, store_key: &
     }
 }
 
+/// Open an FTP control connection. Returns session_id (>= 0) or -1 on error.
+pub fn ftp_connect(pid: u32, server_ip: &str, user: &str, pass: &str) -> i64 {
+    let mut sockets_guard = SOCKETS.lock();
+    if let Some(ref mut sockets) = *sockets_guard {
+        ftp_job::create_ftp_session(pid, server_ip, user, pass, sockets)
+    } else {
+        -1
+    }
+}
+
+/// Enqueue an FTP command on an existing session.
+pub fn ftp_command(session_id: u64, cmd: ftp_job::FtpCommand) {
+    ftp_job::enqueue_ftp_command(session_id, cmd);
+}
+
 pub fn start_fetch(pid: u32, url: &str, method: &str, body: &str, headers_json: &str, alpn_protocols: Option<alloc::vec::Vec<alloc::string::String>>) {
     let is_https = url.starts_with("https://");
     let url_body = if is_https {
@@ -586,6 +605,9 @@ pub fn poll_network() {
 
     // Drive TFTP jobs
     tftp_job::poll_tftp_jobs(sockets, current_ticks);
+
+    // Drive FTP sessions
+    ftp_job::poll_ftp_sessions(sockets, iface, current_ticks);
 
     // Drive TCP servers
     poll_server_sockets(sockets, current_ticks);
@@ -1084,6 +1106,27 @@ pub fn poll_network() {
                 "if (typeof globalThis.__onTftpResult === 'function') \
                  {{ globalThis.__onTftpResult('{}', '{}'); }}",
                 escaped_key, escaped_result
+            );
+            let _ = sandbox_arc.lock().eval(&script);
+        }
+    }
+
+    // Deliver FTP results to JS callbacks
+    let ftp_results: alloc::vec::Vec<(u32, u64, bool, alloc::string::String)> = {
+        let mut results = FTP_RESULTS.lock();
+        core::mem::take(&mut *results)
+    };
+    for (pid, session_id, success, data) in ftp_results {
+        let sandbox_arc = {
+            let list = crate::process::PROCESS_LIST.lock();
+            list.get(&pid).map(|p| p.sandbox.clone())
+        };
+        if let Some(sandbox_arc) = sandbox_arc {
+            let escaped_data = data.replace('\\', "\\\\").replace('\'', "\\'");
+            let script = alloc::format!(
+                "if (typeof globalThis.__onFtpResult === 'function') \
+                 {{ globalThis.__onFtpResult({}, {}, '{}'); }}",
+                session_id, if success { "true" } else { "false" }, escaped_data
             );
             let _ = sandbox_arc.lock().eval(&script);
         }
@@ -1785,4 +1828,7 @@ pub fn cleanup_process_network(pid: u32) {
             i += 1;
         }
     }
+
+    // Clean up FTP sessions
+    ftp_job::cleanup_process_ftp(pid, sockets);
 }
