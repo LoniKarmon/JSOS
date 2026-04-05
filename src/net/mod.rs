@@ -1559,12 +1559,24 @@ fn handle_redirect_or_finish(idx: usize, job: &mut FetchJob, sockets: &mut Socke
     if is_redirect && has_location && job.redirect_count < 5 {
         if let Some(loc_line) = job.response.lines().find(|l| l.starts_with("Location:") || l.starts_with("location:")) {
             let colon_pos = loc_line.find(':').unwrap_or(0);
-            let new_url = loc_line[colon_pos + 1..].trim();
+            let raw_url = loc_line[colon_pos + 1..].trim();
+            // Resolve relative URLs against the current request origin
+            let new_url = if raw_url.starts_with("http://") || raw_url.starts_with("https://") {
+                alloc::string::String::from(raw_url)
+            } else if raw_url.starts_with("//") {
+                let scheme = if job.is_https { "https:" } else { "http:" };
+                alloc::format!("{}{}", scheme, raw_url)
+            } else if raw_url.starts_with('/') {
+                let scheme = if job.is_https { "https" } else { "http" };
+                alloc::format!("{}://{}:{}{}", scheme, job.host, job.port, raw_url)
+            } else {
+                alloc::format!("{}://{}/{}", if job.is_https { "https" } else { "http" }, job.host, raw_url)
+            };
             serial_println!("[FETCH] Redirecting to: {}", new_url);
-            
+
             // Re-parse URL and reset job
-            let (is_https, host, port, path) = parse_url(new_url);
-            job.url = new_url.into();
+            let (is_https, host, port, path) = parse_url(&new_url);
+            job.url = new_url;
             job.host = host;
             job.port = port;
             job.path = path;
