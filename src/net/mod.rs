@@ -835,7 +835,7 @@ pub fn poll_network() {
             6 => {
                 if job.tls_write_future_ptr_val == 0 {
                     let connection = unsafe { &mut *(job.tls_connection_ptr_val as *mut TlsConnection<'static, NonBlockingSmoltcpIo, Aes128GcmSha256>) };
-                    let mut request = alloc::format!("{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n", job.method, job.path, job.host);
+                    let mut request = alloc::format!("{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept-Encoding: identity\r\n", job.method, job.path, job.host);
                     for (k, v) in parse_headers_simple(&job.headers_json) {
                         request.push_str(&alloc::format!("{}: {}\r\n", k, v));
                     }
@@ -844,7 +844,7 @@ pub fn poll_network() {
                     }
                     request.push_str("\r\n");
                     request.push_str(&job.body);
-                    
+
                     job.tls_send_data = request.into_bytes();
                     
                     // The future borrows from job.tls_send_data. Since FetchJob is Boxed, the address of tls_send_data's heap storage is stable...
@@ -997,8 +997,8 @@ pub fn poll_network() {
                 let handle = job.tcp_handle.unwrap();
                 let socket = sockets.get_mut::<TcpSocket>(handle);
                 if socket.can_send() {
-                    let mut request = alloc::format!("{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n", job.method, job.path, job.host);
-                    
+                    let mut request = alloc::format!("{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept-Encoding: identity\r\n", job.method, job.path, job.host);
+
                     // Add custom headers
                     for (k, v) in parse_headers_simple(&job.headers_json) {
                         request.push_str(&alloc::format!("{}: {}\r\n", k, v));
