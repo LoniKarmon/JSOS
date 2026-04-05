@@ -2,4 +2,5 @@
 
 extern crate alloc;
 
+pub mod ftp;
 pub mod tftp;
