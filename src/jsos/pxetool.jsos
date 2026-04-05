@@ -1,0 +1,449 @@
+// src/jsos/pxetool.jsos — Interactive PXE Boot Configuration Tool
+// Tool for pulling, inspecting, and auditing Windows PXE configurations
+
+import { Window, Keys, Store } from 'libjsos.js';
+
+// ── Layout ─────────────────────────────────────────────────────────────────
+const WIN_W   = 800;
+const WIN_H   = 500;
+const PAD_TOP = 10;
+const PAD_L   = 10;
+const LINE_H  = 20;
+const CHAR_W  = 8;
+const VISIBLE = Math.floor((WIN_H - PAD_TOP - LINE_H - 10) / LINE_H); // 23 lines
+
+// ── Colors ─────────────────────────────────────────────────────────────────
+const BG     = [10,  15,  20 ];
+const TEXT   = [200, 220, 240];
+const PROMPT = [255, 255, 255];
+const DIM    = [110, 130, 160];
+const ERROR  = [220, 80,  80 ];
+const SUCCESS= [100, 220, 120];
+const SB_BG  = [30,  40,  55 ];
+const SB_FG  = [90,  130, 200];
+
+// ── State ──────────────────────────────────────────────────────────────────
+const win = new Window(40, 40, WIN_W, WIN_H);
+const state = {
+    winId:        win.id,
+    buffer:       "",
+    cursor:       0,
+    lines:        [],
+    scrollOffset: 0,
+    history:      [],
+    historyIdx:   -1,
+    savedDraft:   "",
+};
+
+// ── Load PXE library ───────────────────────────────────────────────────────
+let PXE = null;
+function loadPxeLibrary() {
+    try {
+        // Attempt to load the PXE library from store (if pre-compiled)
+        const pxeCode = os.store.get("libjsos:pxe");
+        if (pxeCode) {
+            eval(pxeCode);
+            return globalThis.PXE;
+        }
+    } catch(e) {}
+
+    // Create a stub PXE library with basic functionality
+    return {
+        parseBCD: function(data) {
+            // Minimal BCD parser for binary data
+            // In full implementation, would decode Boot Configuration Data format
+            return { entries: [], error: "BCD parsing not yet implemented" };
+        },
+        formatBCD: function(bcd) {
+            return JSON.stringify(bcd, null, 2);
+        },
+        audit: function(bcd) {
+            // Security audit checks
+            return {
+                issues: [],
+                warnings: [],
+                info: "Audit checks not yet implemented"
+            };
+        },
+        formatAudit: function(auditResult) {
+            let output = "=== PXE Security Audit ===\n\n";
+            if (auditResult.info) output += "Info: " + auditResult.info + "\n";
+            if (auditResult.issues && auditResult.issues.length > 0) {
+                output += "\nIssues:\n";
+                auditResult.issues.forEach(i => output += "  [!] " + i + "\n");
+            }
+            if (auditResult.warnings && auditResult.warnings.length > 0) {
+                output += "\nWarnings:\n";
+                auditResult.warnings.forEach(w => output += "  [W] " + w + "\n");
+            }
+            return output || "(No issues found)";
+        }
+    };
+}
+
+PXE = loadPxeLibrary();
+
+// ── Scroll & Output helpers ────────────────────────────────────────────────
+function maxScroll()      { return Math.max(0, state.lines.length - VISIBLE); }
+function scrollUp(n)      { state.scrollOffset = Math.min(state.scrollOffset + n, maxScroll()); }
+function scrollDown(n)    { state.scrollOffset = Math.max(0, state.scrollOffset - n); }
+function scrollToBottom() { state.scrollOffset = 0; }
+
+function pushLine(text) {
+    const maxLen = 96;
+    const str = String(text);
+    if (str.length === 0) { state.lines.push(""); return; }
+    for (let i = 0; i < str.length; i += maxLen) {
+        state.lines.push(str.substring(i, i + maxLen));
+    }
+    if (state.lines.length > 500) {
+        state.lines.splice(0, state.lines.length - 500);
+        scrollToBottom();
+    }
+}
+
+// ── Commands ───────────────────────────────────────────────────────────────
+const COMMANDS = {
+    help: {
+        desc: "Show this help message",
+        fn: () => {
+            pushLine("PXE Tool - Interactive PXE Configuration Manager\n");
+            pushLine("Commands:");
+            pushLine("  pull <server_ip>    - Download BCD and boot files from PXE server");
+            pushLine("  show [store_key]    - Parse and display BCD config (default: pxe:bcd)");
+            pushLine("  audit [store_key]   - Run security audit (default: pxe:bcd)");
+            pushLine("  list                - List all pxe: keys in storage");
+            pushLine("  get <key>           - Display raw store contents");
+            pushLine("  info                - Show PXE tool version and capabilities");
+            pushLine("  clear               - Clear terminal");
+            pushLine("  help                - Show this help");
+        }
+    },
+
+    info: {
+        desc: "Show PXE tool information",
+        fn: () => {
+            pushLine("PXE Tool v0.1 - JSOS PXE Configuration Analysis");
+            pushLine("  Supports: BCD parsing, security auditing, TFTP downloads");
+            pushLine("  Storage: JSKV store with pxe: namespace");
+            pushLine("  Use 'help' for command reference");
+        }
+    },
+
+    clear: {
+        desc: "Clear the terminal",
+        fn: () => {
+            state.lines = [];
+            state.buffer = "";
+            state.cursor = 0;
+            scrollToBottom();
+            render();
+        }
+    },
+
+    list: {
+        desc: "List all pxe: keys in storage",
+        fn: () => {
+            try {
+                const allKeys = JSON.parse(os.store.list());
+                const pxeKeys = allKeys.filter(k => k.startsWith("pxe:"));
+                if (pxeKeys.length === 0) {
+                    pushLine("(no pxe: keys in storage)");
+                } else {
+                    pushLine("PXE Store Keys:");
+                    pxeKeys.forEach(k => {
+                        const val = os.store.get(k);
+                        const size = val ? val.length : 0;
+                        pushLine("  " + k + "  (" + size + " bytes)");
+                    });
+                }
+            } catch(e) {
+                pushLine("Error: " + e);
+            }
+        }
+    },
+
+    get: {
+        desc: "Display raw store key contents",
+        fn: (args) => {
+            if (!args[1]) {
+                pushLine("Usage: get <key>");
+                return;
+            }
+            try {
+                const val = os.store.get(args[1]);
+                if (!val) {
+                    pushLine("(key not found: " + args[1] + ")");
+                } else {
+                    pushLine("Key: " + args[1] + " (" + val.length + " bytes)");
+                    pushLine("Value:");
+                    if (val.length > 1000) {
+                        pushLine(val.substring(0, 1000));
+                        pushLine("... (" + (val.length - 1000) + " more bytes)");
+                    } else {
+                        pushLine(val);
+                    }
+                }
+            } catch(e) {
+                pushLine("Error: " + e);
+            }
+        }
+    },
+
+    pull: {
+        desc: "Download BCD from TFTP server",
+        fn: async (args) => {
+            if (!args[1]) {
+                pushLine("Usage: pull <server_ip>");
+                return;
+            }
+            const server = args[1];
+            pushLine("Pulling BCD from " + server + "...");
+            try {
+                await os.tftp.get(server, "/boot/BCD", "pxe:bcd");
+                pushLine("Success: Downloaded /boot/BCD to pxe:bcd");
+                pushLine("Use 'show pxe:bcd' to parse and display contents.");
+            } catch(e) {
+                pushLine("Error pulling BCD: " + e);
+            }
+        }
+    },
+
+    show: {
+        desc: "Parse and display BCD configuration",
+        fn: (args) => {
+            const key = args[1] || "pxe:bcd";
+            try {
+                const data = os.store.get(key);
+                if (!data) {
+                    pushLine("(key not found: " + key + ")");
+                    return;
+                }
+                pushLine("Parsing BCD from " + key + " (" + data.length + " bytes)...\n");
+
+                // Attempt to parse BCD
+                let bcd;
+                try {
+                    bcd = PXE.parseBCD ? PXE.parseBCD(data) : { error: "parseBCD not available" };
+                } catch(e) {
+                    bcd = { error: "Parse error: " + e };
+                }
+
+                if (bcd.error) {
+                    pushLine("Parse Error: " + bcd.error);
+                    pushLine("\nRaw BCD data (hex dump):");
+                    // Show first 256 bytes as hex
+                    let hex = "";
+                    for (let i = 0; i < Math.min(256, data.length); i++) {
+                        const code = data.charCodeAt(i);
+                        hex += (code < 16 ? "0" : "") + code.toString(16) + " ";
+                        if ((i + 1) % 16 === 0) {
+                            pushLine(hex);
+                            hex = "";
+                        }
+                    }
+                    if (hex.length > 0) pushLine(hex);
+                } else {
+                    if (PXE.formatBCD) {
+                        pushLine(PXE.formatBCD(bcd));
+                    } else {
+                        pushLine(JSON.stringify(bcd, null, 2));
+                    }
+                }
+            } catch(e) {
+                pushLine("Error: " + e);
+            }
+        }
+    },
+
+    audit: {
+        desc: "Run security audit on BCD configuration",
+        fn: (args) => {
+            const key = args[1] || "pxe:bcd";
+            try {
+                const data = os.store.get(key);
+                if (!data) {
+                    pushLine("(key not found: " + key + ")");
+                    return;
+                }
+                pushLine("Running security audit on " + key + "...\n");
+
+                let auditResult;
+                try {
+                    const bcd = PXE.parseBCD ? PXE.parseBCD(data) : null;
+                    auditResult = PXE.audit ? PXE.audit(bcd) : { info: "audit not available" };
+                } catch(e) {
+                    auditResult = { error: "Audit error: " + e };
+                }
+
+                if (PXE.formatAudit) {
+                    pushLine(PXE.formatAudit(auditResult));
+                } else {
+                    pushLine(JSON.stringify(auditResult, null, 2));
+                }
+            } catch(e) {
+                pushLine("Error: " + e);
+            }
+        }
+    }
+};
+
+globalThis.on_input = function(cmdStr) {
+    const args = cmdStr.trim().split(/\s+/).filter(s => s.length > 0);
+    if (args.length === 0) { render(); return; }
+    const cmd = args[0];
+    if (COMMANDS[cmd]) {
+        try { COMMANDS[cmd].fn(args); }
+        catch(e) { pushLine("Error: " + e.message); }
+    } else {
+        pushLine("Unknown command: " + cmd + "  (try 'help')");
+    }
+};
+
+// ── Renderer ───────────────────────────────────────────────────────────────
+function render() {
+    const sbW = 6;
+    os.window.drawRect(state.winId, 0, 0, WIN_W, WIN_H, ...BG);
+
+    // Display scrollback buffer
+    const total    = state.lines.length;
+    const startIdx = Math.max(0, total - VISIBLE - state.scrollOffset);
+    const endIdx   = Math.max(0, total - state.scrollOffset);
+    let y = PAD_TOP;
+    for (const line of state.lines.slice(startIdx, endIdx)) {
+        os.window.drawString(state.winId, line, PAD_L, y + LINE_H - 4, ...TEXT);
+        y += LINE_H;
+    }
+
+    // Prompt line
+    const promptY = PAD_TOP + VISIBLE * LINE_H;
+    os.window.drawRect(state.winId, 0, promptY - 2, WIN_W - sbW - 2, 1, ...DIM);
+
+    const prefix        = "pxe> ";
+    const maxInputChars = Math.floor((WIN_W - PAD_L - 4) / CHAR_W) - prefix.length - 1;
+    const viewStart     = Math.max(0, state.cursor - maxInputChars + 1);
+    const visBuf        = state.buffer.slice(viewStart, viewStart + maxInputChars + 1);
+    const dispCursor    = state.cursor - viewStart;
+    const beforeCur     = visBuf.slice(0, dispCursor);
+    const atCur         = visBuf[dispCursor] || " ";
+    const afterCur      = visBuf.slice(dispCursor + 1);
+
+    os.window.drawString(state.winId, prefix + beforeCur, PAD_L, promptY + LINE_H - 4, ...PROMPT);
+    const cursorX = PAD_L + (prefix.length + beforeCur.length) * CHAR_W;
+    const blink   = Math.floor(os.uptime()) % 2 === 0;
+    os.window.drawRect(state.winId, cursorX, promptY + 2, CHAR_W, LINE_H - 4,
+        blink ? 180 : 70, blink ? 200 : 100, blink ? 255 : 150);
+    os.window.drawString(state.winId, atCur, cursorX, promptY + LINE_H - 4,
+        blink ? 10 : 220, blink ? 10 : 240, blink ? 15 : 255);
+    if (afterCur.length > 0) {
+        os.window.drawString(state.winId, afterCur, cursorX + CHAR_W, promptY + LINE_H - 4, ...PROMPT);
+    }
+
+    // Scrollbar
+    if (total > VISIBLE) {
+        const sbX = WIN_W - sbW - 1;
+        const sbH = WIN_H - 4;
+        os.window.drawRect(state.winId, sbX, 2, sbW, sbH, ...SB_BG);
+        const thumbH = Math.max(20, Math.floor(sbH * VISIBLE / total));
+        const scroll = maxScroll();
+        const thumbPos = scroll > 0 ? Math.floor((sbH - thumbH) * (scroll - state.scrollOffset) / scroll) : 0;
+        os.window.drawRect(state.winId, sbX, 2 + thumbPos, sbW, thumbH, ...SB_FG);
+    }
+
+    os.window.flush(state.winId);
+}
+
+// ── Keyboard Handler ───────────────────────────────────────────────────────
+function handleKey(charCode) {
+    const b = state.buffer;
+    const c = state.cursor;
+    switch (charCode) {
+    case 13: case 10: // Enter
+        const cmd = state.buffer;
+        state.buffer = ""; state.cursor = 0; state.historyIdx = -1; state.savedDraft = "";
+        pushLine("pxe> " + cmd);
+        scrollToBottom();
+        if (cmd.trim().length > 0 && state.history[state.history.length - 1] !== cmd) {
+            state.history.push(cmd);
+        }
+        globalThis.on_input(cmd);
+        render();
+        break;
+    case 8: // Backspace
+        if (c > 0) { state.buffer = b.slice(0, c - 1) + b.slice(c); state.cursor = c - 1; }
+        render(); break;
+    case 0x7F: // Delete
+        if (c < b.length) { state.buffer = b.slice(0, c) + b.slice(c + 1); }
+        render(); break;
+    case 0x02: // Arrow Left
+        state.cursor = Math.max(0, c - 1); render(); break;
+    case 0x06: // Arrow Right
+        state.cursor = Math.min(b.length, c + 1); render(); break;
+    case 0x01: // Ctrl+A
+        state.cursor = 0; render(); break;
+    case 0x05: // Ctrl+E
+        state.cursor = b.length; render(); break;
+    case 0x0B: // Ctrl+K
+        state.buffer = b.slice(0, c); render(); break;
+    case 0x15: // Ctrl+U
+        state.buffer = ""; state.cursor = 0; render(); break;
+    case 0x10: // Arrow Up
+        if (state.history.length === 0) break;
+        if (state.historyIdx === -1) { state.savedDraft = state.buffer; state.historyIdx = state.history.length - 1; }
+        else if (state.historyIdx > 0) { state.historyIdx--; }
+        state.buffer = state.history[state.historyIdx];
+        state.cursor = state.buffer.length;
+        render(); break;
+    case 0x0E: // Arrow Down
+        if (state.historyIdx === -1) break;
+        if (state.historyIdx < state.history.length - 1) {
+            state.historyIdx++;
+            state.buffer = state.history[state.historyIdx];
+        } else {
+            state.historyIdx = -1;
+            state.buffer = state.savedDraft;
+        }
+        state.cursor = state.buffer.length;
+        render(); break;
+    case 0x1B: // PageUp
+        scrollUp(VISIBLE); render(); break;
+    case 0x1C: // PageDown
+        scrollDown(VISIBLE); render(); break;
+    case 0x03: // Ctrl+C
+        pushLine("pxe> " + b + "^C");
+        state.buffer = ""; state.cursor = 0; state.historyIdx = -1; scrollToBottom(); render(); break;
+    case 27: // Escape or Ctrl+Q (quit)
+    case 113: case 81: // 'q' or 'Q'
+        os.exit();
+        break;
+    default:
+        if (charCode >= 32 && charCode <= 126) {
+            if (state.historyIdx !== -1) { state.historyIdx = -1; state.savedDraft = ""; }
+            state.buffer = b.slice(0, c) + String.fromCharCode(charCode) + b.slice(c);
+            state.cursor = c + 1;
+            render();
+        }
+        break;
+    }
+}
+
+globalThis.on_key = function(charCode) {
+    handleKey(charCode);
+};
+
+// ── IPC & Event Handlers ───────────────────────────────────────────────────
+win.installIpc({
+    key(charCode) { globalThis.on_key(charCode); },
+    render,
+    scroll(delta) {
+        if (delta > 0) scrollUp(delta * 3);
+        else           scrollDown(-delta * 3);
+        render();
+    },
+});
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+pushLine("PXE Tool - Windows PXE Configuration Manager");
+pushLine("Type 'help' for available commands.");
+pushLine("");
+render();
