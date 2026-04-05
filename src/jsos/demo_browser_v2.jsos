@@ -24,7 +24,7 @@ const T = Theme.dark();
 // ── State ────────────────────────────────────────────────────────────────────
 const win = new Window(30, 20, W, H);
 
-var urlText = 'https://en.wikipedia.org/wiki/Main_Page';
+var urlText = 'https://en.wikipedia.org/wiki/JavaScript';
 var urlCursor = urlText.length;
 var urlFocused = true;
 var statusText = 'Type a URL and press Enter';
@@ -126,7 +126,7 @@ function drawContent() {
         return;
     }
 
-    paint.paint(pageCmds, win.id, scrollY - CONTENT_Y, CONTENT_H);
+    paint.paint(pageCmds, win.id, scrollY, CONTENT_H);
 }
 
 // ── Full Render ──────────────────────────────────────────────────────────────
