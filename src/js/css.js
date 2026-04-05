@@ -39,41 +39,127 @@ function parseDeclarations(block) {
 function specificity(sel) {
     if (!sel) return 0;
     sel = sel.trim();
-    if (sel.startsWith('#')) return 100;
-    if (sel.startsWith('.')) return 10;
-    return 1;
+    var parts = sel.match(/#[\w-]+|\.[\w-]+|\[[\w-]+(?:=[^\]]+)?\]|:[\w-]+(?:\([^)]*\))?|[\w-]+|\*/g) || [];
+    var a = 0, b = 0, c = 0;
+    for (var i = 0; i < parts.length; i++) {
+        var p = parts[i];
+        if (p[0] === '#') a++;
+        else if (p[0] === '.' || p[0] === '[' || p[0] === ':') b++;
+        else if (p !== '*') c++;
+    }
+    return a * 100 + b * 10 + c;
 }
 
-function matches(node, sel) {
+function matchesCompound(node, compound) {
     if (!node || node.nodeType !== 1) return false;
-    sel = sel.trim();
-    if (sel === '*' || sel === '') return true;
-    if (sel[0] === '#') return node.attrs.id === sel.slice(1);
-    if (sel[0] === '.') {
-        var classes = (node.attrs['class'] || '').split(/\s+/);
-        return classes.indexOf(sel.slice(1)) !== -1;
+    compound = compound.trim();
+    if (compound === '*') return true;
+    var parts = compound.match(/#[\w-]+|\.[\w-]+|\[[\w-]+(?:=[^\]"']+|="[^"]*"|='[^']*')?\]|:[\w-]+(?:\([^)]*\))?|[\w-]+|\*/g);
+    if (!parts) return false;
+    var classes = (node.attrs['class'] || '').split(/\s+/);
+    for (var i = 0; i < parts.length; i++) {
+        var p = parts[i];
+        if (p[0] === '#') {
+            if (node.attrs.id !== p.slice(1)) return false;
+        } else if (p[0] === '.') {
+            if (classes.indexOf(p.slice(1)) === -1) return false;
+        } else if (p[0] === '[') {
+            var inner = p.slice(1, -1);
+            var eqIdx = inner.indexOf('=');
+            if (eqIdx === -1) {
+                if (!(inner in node.attrs)) return false;
+            } else {
+                var attrName = inner.slice(0, eqIdx);
+                var attrVal = inner.slice(eqIdx + 1).replace(/^["']|["']$/g, '');
+                if (node.attrs[attrName] !== attrVal) return false;
+            }
+        } else if (p[0] === ':') {
+            var pseudo = p.slice(1);
+            if (pseudo === 'first-child') {
+                if (!node.parent || node.parent.children.indexOf(node) !== 0) return false;
+            } else if (pseudo === 'last-child') {
+                if (!node.parent || node.parent.children.indexOf(node) !== node.parent.children.length - 1) return false;
+            }
+        } else if (p !== '*') {
+            if (node.tagName !== p.toLowerCase()) return false;
+        }
     }
-    return node.tagName === sel.toLowerCase();
+    return true;
+}
+
+function matchesSelector(node, selector) {
+    if (!node || node.nodeType !== 1) return false;
+    selector = selector.trim();
+    var compoundParts = selector.replace(/\s*>\s*/g, ' > ').split(/\s+/);
+    if (compoundParts.length === 1) {
+        return matchesCompound(node, compoundParts[0]);
+    }
+    var rightmost = compoundParts[compoundParts.length - 1];
+    if (!matchesCompound(node, rightmost)) return false;
+    var cur = node;
+    for (var i = compoundParts.length - 2; i >= 0; i--) {
+        var part = compoundParts[i];
+        if (part === '>') continue;
+        var isChild = (i + 1 < compoundParts.length && compoundParts[i + 1] === '>');
+        if (isChild) {
+            cur = cur.parent;
+            if (!cur || !matchesCompound(cur, part)) return false;
+        } else {
+            var found = false;
+            cur = cur.parent;
+            while (cur && cur.nodeType === 1) {
+                if (matchesCompound(cur, part)) { found = true; break; }
+                cur = cur.parent;
+            }
+            if (!found) return false;
+        }
+    }
+    return true;
 }
 
 // ── Default tag styles ────────────────────────────────────────────────────────
 
 var BLOCK_TAGS = {
     'html':1,'body':1,'div':1,'p':1,'h1':1,'h2':1,'h3':1,'h4':1,'h5':1,'h6':1,
-    'ul':1,'ol':1,'li':1,'section':1,'article':1,'header':1,'footer':1,'nav':1,'main':1
+    'ul':1,'ol':1,'li':1,'section':1,'article':1,'header':1,'footer':1,'nav':1,'main':1,
+    'table':1,'tr':1,'blockquote':1,'pre':1,'hr':1,'figure':1,'figcaption':1,'dl':1,'dt':1,'dd':1
+};
+
+var INLINE_TAGS = {
+    'a':1,'span':1,'em':1,'strong':1,'b':1,'i':1,'u':1,'code':1,'small':1,'sub':1,'sup':1,'abbr':1,'cite':1,'mark':1,'s':1,'time':1
 };
 
 var TAG_DEFAULTS = {
     'h1': { fontSize: '20px', fontWeight: 'bold', marginTop: '8px', marginBottom: '4px' },
     'h2': { fontSize: '17px', fontWeight: 'bold', marginTop: '6px', marginBottom: '3px' },
     'h3': { fontSize: '15px', fontWeight: 'bold', marginTop: '4px', marginBottom: '2px' },
+    'h4': { fontSize: '14px', fontWeight: 'bold', marginTop: '3px', marginBottom: '2px' },
+    'h5': { fontSize: '13px', fontWeight: 'bold', marginTop: '2px', marginBottom: '1px' },
+    'h6': { fontSize: '12px', fontWeight: 'bold', marginTop: '2px', marginBottom: '1px' },
     'p':  { marginTop: '4px', marginBottom: '4px' },
-    'li': { marginTop: '2px', marginBottom: '2px' }
+    'li': { marginTop: '2px', marginBottom: '2px', display: 'list-item' },
+    'ul': { marginTop: '4px', marginBottom: '4px', paddingLeft: '20px', listStyleType: 'disc' },
+    'ol': { marginTop: '4px', marginBottom: '4px', paddingLeft: '20px', listStyleType: 'decimal' },
+    'a':  { color: '#6496ff', textDecoration: 'underline', display: 'inline' },
+    'em': { fontStyle: 'italic', display: 'inline' },
+    'i':  { fontStyle: 'italic', display: 'inline' },
+    'strong': { fontWeight: 'bold', display: 'inline' },
+    'b':  { fontWeight: 'bold', display: 'inline' },
+    'u':  { textDecoration: 'underline', display: 'inline' },
+    'code': { backgroundColor: '#1a1a2e', display: 'inline' },
+    'pre': { backgroundColor: '#1a1a2e', whiteSpace: 'pre', padding: '4px', marginTop: '4px', marginBottom: '4px' },
+    'blockquote': { paddingLeft: '12px', marginTop: '4px', marginBottom: '4px', borderLeft: '3px solid #444' },
+    'hr': { marginTop: '8px', marginBottom: '8px' },
+    'table': { marginTop: '4px', marginBottom: '4px' },
+    'th': { fontWeight: 'bold', padding: '2px' },
+    'td': { padding: '2px' },
+    'span': { display: 'inline' },
+    'small': { display: 'inline' },
 };
 
 // ── Style cascade ──────────────────────────────────────────────────────────────
 
-var INHERITABLE = ['color', 'fontSize', 'fontWeight', 'fontFamily', 'lineHeight'];
+var INHERITABLE = ['color', 'fontSize', 'fontWeight', 'fontFamily', 'lineHeight', 'textAlign', 'textDecoration', 'whiteSpace', 'listStyleType', 'fontStyle'];
 
 function applyStyles(root, rules, parentStyle) {
     if (!root || root.nodeType !== 1) return;
@@ -90,7 +176,7 @@ function applyStyles(root, rules, parentStyle) {
     // Apply rules in ascending specificity
     var sorted = rules.slice().sort(function(a, b) { return specificity(a.selector) - specificity(b.selector); });
     sorted.forEach(function(rule) {
-        if (matches(root, rule.selector)) {
+        if (matchesSelector(root, rule.selector)) {
             Object.keys(rule.properties).forEach(function(k) { computed[k] = rule.properties[k]; });
         }
     });
@@ -102,7 +188,19 @@ function applyStyles(root, rules, parentStyle) {
 
     // display default
     if (!computed.display) {
-        computed.display = BLOCK_TAGS[root.tagName] ? 'block' : 'inline';
+        if (INLINE_TAGS[root.tagName]) {
+            computed.display = 'inline';
+        } else if (root.tagName === 'table') {
+            computed.display = 'table';
+        } else if (root.tagName === 'tr') {
+            computed.display = 'table-row';
+        } else if (root.tagName === 'td' || root.tagName === 'th') {
+            computed.display = 'table-cell';
+        } else if (BLOCK_TAGS[root.tagName]) {
+            computed.display = 'block';
+        } else {
+            computed.display = 'inline';
+        }
     }
 
     root.computedStyle = computed;
@@ -114,4 +212,4 @@ function applyStyles(root, rules, parentStyle) {
     root.children.forEach(function(child) { applyStyles(child, rules, childParent); });
 }
 
-module.exports = { parseCSS: parseCSS, applyStyles: applyStyles };
+module.exports = { parseCSS: parseCSS, applyStyles: applyStyles, matchesSelector: matchesSelector, matchesCompound: matchesCompound };
