@@ -954,15 +954,11 @@ impl QuickJsSandbox {
                     let msg = js_to_rust_string(ctx, exc);
                     JS_FreeValue(ctx, exc);
                     if msg.contains(JS_INTERRUPT_MSG) {
-                        crate::serial_println!("[pending-jobs] preempted after {} jobs", count);
                         return Ok(());
                     }
-                    crate::serial_println!("JS Async Error (job #{}): {}", count, msg);
+                    crate::serial_println!("JS Async Error: {}", msg);
                     return Err(msg);
                 }
-            }
-            if count > 0 {
-                crate::serial_println!("[pending-jobs] completed {} jobs", count);
             }
             Ok(())
         }

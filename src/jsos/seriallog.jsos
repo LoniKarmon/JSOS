@@ -53,7 +53,7 @@ function render() {
 win.installIpc({
     render,
     key(charCode) {
-        if (Keys.isQuit(charCode)) os.exit();
+        if (charCode === Keys.CTRL_Q) os.exit();
     },
 });
 

@@ -25,7 +25,7 @@ const Keys = {
     CTRL_S: 19,
     CTRL_U: 0x15,
     CTRL_W: 0x17,
-    isQuit:      (c) => c === 113 || c === 81 || c === 27,
+    isQuit:      (c) => c === 17 || c === 27,  // Ctrl+Q or ESC
     isEnter:     (c) => c === 13 || c === 10,
     isBackspace: (c) => c === 8,
     isDelete:    (c) => c === 0x7F,
