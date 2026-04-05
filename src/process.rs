@@ -458,9 +458,9 @@ pub fn poll_processes() {
             }
 
             if err.is_none() {
-                // Give pending jobs (promise continuations) a generous budget —
-                // async work like HTML parsing after fetch can be expensive.
-                sandbox.start_timeslice_with_budget(2000);
+                // Disable preemption for pending jobs — async work like parsing
+                // 230KB of Wikipedia HTML can take many seconds in QuickJS.
+                sandbox.start_timeslice_with_budget(u64::MAX / 2);
                 if let Err(e) = sandbox.execute_pending_jobs() {
                     err = Some(e);
                 } else {

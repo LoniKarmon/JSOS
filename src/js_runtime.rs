@@ -943,21 +943,26 @@ impl QuickJsSandbox {
     pub fn execute_pending_jobs(&mut self) -> Result<(), String> {
         unsafe {
             let mut pctx: *mut JSContext = core::ptr::null_mut();
+            let mut count = 0u32;
             loop {
                 let ret = JS_ExecutePendingJob(self.rt, &mut pctx);
                 if ret == 0 { break; }
+                count += 1;
                 if ret < 0 {
                     let ctx = if pctx.is_null() { self.ctx } else { pctx };
                     let exc = JS_GetException(ctx);
                     let msg = js_to_rust_string(ctx, exc);
                     JS_FreeValue(ctx, exc);
                     if msg.contains(JS_INTERRUPT_MSG) {
-                        // Preempted — not a crash. Resume next frame.
+                        crate::serial_println!("[pending-jobs] preempted after {} jobs", count);
                         return Ok(());
                     }
-                    crate::serial_println!("JS Async Error: {}", msg);
+                    crate::serial_println!("JS Async Error (job #{}): {}", count, msg);
                     return Err(msg);
                 }
+            }
+            if count > 0 {
+                crate::serial_println!("[pending-jobs] completed {} jobs", count);
             }
             Ok(())
         }
