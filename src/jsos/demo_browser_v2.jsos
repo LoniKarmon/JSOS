@@ -132,8 +132,9 @@ function drawContent() {
 
 // ── Full Render ──────────────────────────────────────────────────────────────
 function render() {
-    drawUrlBar();
+    // Draw content first, then bars on top so content can't overflow into chrome
     drawContent();
+    drawUrlBar();
     drawStatusBar();
     win.flush();
 }
