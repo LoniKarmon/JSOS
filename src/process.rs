@@ -458,7 +458,9 @@ pub fn poll_processes() {
             }
 
             if err.is_none() {
-                sandbox.start_timeslice();
+                // Give pending jobs (promise continuations) a generous budget —
+                // async work like HTML parsing after fetch can be expensive.
+                sandbox.start_timeslice_with_budget(2000);
                 if let Err(e) = sandbox.execute_pending_jobs() {
                     err = Some(e);
                 } else {

@@ -1105,7 +1105,11 @@ pub fn poll_network() {
                  {{ globalThis.__onFetchResponse('{}', {}, `{}`); }}",
                 job.original_url, status_code, escaped
             );
-            let _ = sandbox_arc.lock().eval(&script);
+            serial_println!("[FETCH] Delivering to PID {} (script len={}, body len={})", job.pid, script.len(), escaped.len());
+            match sandbox_arc.lock().eval(&script) {
+                Ok(_) => serial_println!("[FETCH] Delivered OK to PID {}", job.pid),
+                Err(e) => serial_println!("[FETCH] Delivery FAILED to PID {}: {}", job.pid, e),
+            }
         }
     }
 

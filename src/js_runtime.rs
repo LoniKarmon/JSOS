@@ -905,6 +905,12 @@ impl QuickJsSandbox {
         self.start_timeslice();
     }
 
+    /// Start a timeslice with a custom budget (in ticks).
+    pub fn start_timeslice_with_budget(&mut self, ticks: u64) {
+        self.timeslice.budget_ticks.store(ticks, Ordering::Relaxed);
+        self.start_timeslice();
+    }
+
     pub fn eval(&mut self, script: &str) -> Result<String, String> {
         unsafe {
             let filename = js_cstring("<eval>");
