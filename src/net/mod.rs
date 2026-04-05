@@ -134,6 +134,7 @@ pub struct TlsHandshakeContext {
 pub struct FetchJob {
     pub pid: u32,
     pub url: alloc::string::String,
+    pub original_url: alloc::string::String,
     pub host: alloc::string::String,
     pub path: alloc::string::String,
     pub method: alloc::string::String,
@@ -459,6 +460,7 @@ pub fn start_fetch(pid: u32, url: &str, method: &str, body: &str, headers_json: 
     let job = FetchJob {
         pid,
         url: alloc::string::String::from(url),
+        original_url: alloc::string::String::from(url),
         host,
         path,
         method: alloc::string::String::from(method),
@@ -1100,7 +1102,7 @@ pub fn poll_network() {
             let script = alloc::format!(
                 "if (typeof globalThis.__onFetchResponse === 'function') \
                  {{ globalThis.__onFetchResponse('{}', {}, `{}`); }}",
-                job.url, status_code, escaped
+                job.original_url, status_code, escaped
             );
             let _ = sandbox_arc.lock().eval(&script);
         }
