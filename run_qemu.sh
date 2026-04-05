@@ -128,7 +128,7 @@ QEMU_ARGS=(
     "-drive" "format=raw,file=$DISK_IMAGE,media=disk,index=1"
     "-machine" "pc"
     "-netdev" "user,id=u1,hostfwd=tcp::8080-:80"
-    "-device" "rtl8139,netdev=u1"
+    "-device" "e1000e,netdev=u1"
     "-no-reboot"
     "-device" "isa-debug-exit,iobase=0xf4,iosize=0x04"
     "-device" "qemu-xhci"
