@@ -1527,12 +1527,15 @@ fn poll_ws_frames(job: &mut WebSocketJob, sockets: &mut SocketSet, current_ticks
 }
 
 fn handle_redirect_or_finish(idx: usize, job: &mut FetchJob, sockets: &mut SocketSet, finished_jobs: &mut alloc::vec::Vec<usize>) {
-    // Basic redirect check: 301/302 + Location header
-    if (job.response.contains("HTTP/1.1 301") || job.response.contains("HTTP/1.1 302")) 
-        && job.response.contains("Location:") && job.redirect_count < 5 {
-        
-        if let Some(loc_line) = job.response.lines().find(|l| l.starts_with("Location:")) {
-            let new_url = loc_line["Location:".len()..].trim();
+    // Basic redirect check: 3xx + Location header
+    let first_line = job.response.lines().next().unwrap_or("");
+    let is_redirect = (first_line.contains(" 301") || first_line.contains(" 302") || first_line.contains(" 303") || first_line.contains(" 307") || first_line.contains(" 308"))
+        && first_line.starts_with("HTTP/");
+    let has_location = job.response.contains("Location:") || job.response.contains("location:");
+    if is_redirect && has_location && job.redirect_count < 5 {
+        if let Some(loc_line) = job.response.lines().find(|l| l.starts_with("Location:") || l.starts_with("location:")) {
+            let colon_pos = loc_line.find(':').unwrap_or(0);
+            let new_url = loc_line[colon_pos + 1..].trim();
             serial_println!("[FETCH] Redirecting to: {}", new_url);
             
             // Re-parse URL and reset job

@@ -158,6 +158,7 @@ async function navigate(url) {
             headers: { 'User-Agent': 'JSOS-Browser/1.0 (bare-metal OS; https://github.com/LoniKarmon/JSOS)' }
         });
         var html = (typeof resp === 'object' && resp.text) ? await resp.text() : String(resp);
+        if (!html) html = '';
         pageHtml = sanitizeHtml(html);
 
         var domRoot = dom.parseHTML(pageHtml);
