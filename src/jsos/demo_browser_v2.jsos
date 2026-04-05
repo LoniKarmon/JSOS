@@ -109,7 +109,8 @@ function drawStatusBar() {
 
 // ── Content Area ─────────────────────────────────────────────────────────────
 function drawContent() {
-    win.rect(0, CONTENT_Y, W, CONTENT_H, T.bg[0], T.bg[1], T.bg[2]);
+    // Clear entire window first to prevent any stale pixels
+    win.rect(0, 0, W, H, T.bg[0], T.bg[1], T.bg[2]);
 
     if (pageCmds.length === 0 && !isLoading && !currentUrl) {
         win.text(W / 2 - 80, H / 2 - 8, 'Enter a URL to browse', T.dim[0], T.dim[1], T.dim[2]);
@@ -126,8 +127,23 @@ function drawContent() {
         return;
     }
 
-    // Layout uses y=0 relative coords; offset by CONTENT_Y for display
-    paint.paint(pageCmds, win.id, scrollY - CONTENT_Y, CONTENT_H);
+    // Render commands with manual CONTENT_Y offset instead of relying on paint's scrollY
+    for (var i = 0; i < pageCmds.length; i++) {
+        var cmd = pageCmds[i];
+        var cy = (cmd.y || 0) - scrollY + CONTENT_Y;
+        if (cy + (cmd.h || 16) < CONTENT_Y) continue; // above content area
+        if (cy > CONTENT_Y + CONTENT_H) continue;       // below content area
+        if (cmd.type === 'rect') {
+            os.window.drawRect(win.id, cmd.x, cy, cmd.w, cmd.h, cmd.r, cmd.g, cmd.b);
+        } else if (cmd.type === 'text') {
+            os.window.drawString(win.id, cmd.text, cmd.x, cy, cmd.r, cmd.g, cmd.b);
+        } else if (cmd.type === 'line') {
+            os.window.drawLine(win.id, cmd.x0, (cmd.y0 || 0) - scrollY + CONTENT_Y, cmd.x1, (cmd.y1 || 0) - scrollY + CONTENT_Y, cmd.r, cmd.g, cmd.b);
+        } else if (cmd.type === 'underline') {
+            var uy = (cmd.y || 0) - scrollY + CONTENT_Y;
+            os.window.drawLine(win.id, cmd.x, uy, cmd.x + cmd.w, uy, cmd.r, cmd.g, cmd.b);
+        }
+    }
 }
 
 // ── Full Render ──────────────────────────────────────────────────────────────
