@@ -296,7 +296,6 @@ pub fn reap_dead_processes() {
     }
 
     // Clean up resources for dead processes (windows, timers, canvas, network).
-    // Must happen while PROCESS_LIST is held to prevent races.
     drop(list); // release PROCESS_LIST before taking other locks
     for pid in &dead_pids {
         crate::js_runtime::cleanup_process_resources(*pid);
@@ -348,7 +347,9 @@ pub fn poll_processes() {
     let active_pid = ACTIVE_FOREGROUND_PID.load(Ordering::SeqCst);
     let active_info = {
         let list = PROCESS_LIST.lock();
-        list.get(&active_pid).map(|p| (p.sandbox.clone(), p.name.clone()))
+        list.get(&active_pid)
+            .filter(|p| !p.dead)
+            .map(|p| (p.sandbox.clone(), p.name.clone()))
     };
     if let Some((arc, name)) = active_info {
         let mut sandbox = arc.lock();
@@ -428,6 +429,12 @@ pub fn poll_processes() {
     }
 
     for (pid, name, sandbox_arc, ipc_queue_arc) in sandboxes {
+        // Skip processes that were marked dead during this tick
+        {
+            let list = PROCESS_LIST.lock();
+            if list.get(&pid).map_or(true, |p| p.dead) { continue; }
+        }
+
         let messages: Vec<String> = {
             let mut q = ipc_queue_arc.lock();
             core::mem::take(&mut *q)
@@ -462,8 +469,7 @@ pub fn poll_processes() {
             }
 
             if err.is_none() {
-                // Give pending jobs a generous budget for async work.
-                sandbox.start_timeslice_with_budget(5000);
+                sandbox.start_timeslice();
                 if let Err(e) = sandbox.execute_pending_jobs() {
                     err = Some(e);
                 } else {

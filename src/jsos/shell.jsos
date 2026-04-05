@@ -558,14 +558,12 @@ function handleShellKey(charCode) {
     }
 }
 
-globalThis.on_key = function(charCode) {
-    if (state.editorMode) handleEditorKey(charCode);
-    else handleShellKey(charCode);
-};
-
 // ── IPC ────────────────────────────────────────────────────────────────────
 win.installIpc({
-    key(charCode) { globalThis.on_key(charCode); },
+    key(charCode) {
+        if (state.editorMode) handleEditorKey(charCode);
+        else handleShellKey(charCode);
+    },
     render,
     scroll(delta) {
         if (delta > 0) scrollUp(delta * 3);

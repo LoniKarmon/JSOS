@@ -427,13 +427,9 @@ function handleKey(charCode) {
     }
 }
 
-globalThis.on_key = function(charCode) {
-    handleKey(charCode);
-};
-
 // ── IPC & Event Handlers ───────────────────────────────────────────────────
 win.installIpc({
-    key(charCode) { globalThis.on_key(charCode); },
+    key(charCode) { handleKey(charCode); },
     render,
     scroll(delta) {
         if (delta > 0) scrollUp(delta * 3);
