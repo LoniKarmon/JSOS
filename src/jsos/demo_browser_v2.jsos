@@ -154,7 +154,8 @@ async function navigate(url) {
     render();
 
     try {
-        var html = await os.fetch(url);
+        var resp = await os.fetch(url);
+        var html = (typeof resp === 'object' && resp.text) ? await resp.text() : String(resp);
         pageHtml = sanitizeHtml(html);
 
         var domRoot = dom.parseHTML(pageHtml);
