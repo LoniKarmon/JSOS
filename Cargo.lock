@@ -605,6 +605,7 @@ dependencies = [
  "linked_list_allocator",
  "pc-keyboard",
  "pic8259",
+ "protocols",
  "rand_chacha",
  "sha2",
  "smoltcp",
@@ -708,6 +709,10 @@ checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "protocols"
+version = "0.1.0"
 
 [[package]]
 name = "quote"

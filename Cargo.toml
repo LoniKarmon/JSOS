@@ -1,6 +1,7 @@
 [workspace]
 members = [
     ".",
+    "protocols",
 ]
 
 [package]
@@ -37,6 +38,7 @@ aes = { version = "0.8", default-features = false }
 hmac = { version = "0.12", default-features = false }
 futures-util = { version = "0.3.30", default-features = false, features = ["alloc"] }
 embedded-io-async = { version = "0.6.1", default-features = false }
+protocols = { path = "protocols" }
 
 zune-png = { version = "0.4.0", default-features = false }
 zune-jpeg = { version = "0.4", default-features = false }
