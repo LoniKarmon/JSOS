@@ -156,10 +156,23 @@ impl<'b> ParseBuffer<'b> {
 
         let mut data = self.slice(data_length)?;
         while !data.is_empty() {
-            result.push(read(&mut data)?).map_err(|_| {
-                error!("Failed to store parse result");
-                ParseError::InsufficientSpace
-            })?;
+            let before = data.offset();
+            match read(&mut data) {
+                Ok(item) => {
+                    let _ = result.push(item); // ignore capacity overflow
+                }
+                Err(ParseError::InvalidData) => {
+                    // Skip unrecognised entries (e.g. unknown cipher suites,
+                    // named groups, or signature schemes).  The reader already
+                    // consumed the bytes, so just continue.
+                    if data.offset() == before {
+                        // Reader didn't advance — skip 2 bytes to avoid
+                        // an infinite loop (all TLS list entries are ≥ 2 B).
+                        let _ = data.read_u16();
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         Ok(result)

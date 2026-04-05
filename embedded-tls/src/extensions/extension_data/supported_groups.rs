@@ -56,10 +56,15 @@ pub struct SupportedGroups<const N: usize> {
 impl<const N: usize> SupportedGroups<N> {
     pub fn parse(buf: &mut ParseBuffer) -> Result<Self, ParseError> {
         let data_length = buf.read_u16()? as usize;
-
-        Ok(Self {
-            supported_groups: buf.read_list::<_, N>(data_length, NamedGroup::parse)?,
-        })
+        let mut groups_buf = buf.slice(data_length)?;
+        let mut supported_groups = Vec::new();
+        while groups_buf.remaining() >= 2 {
+            match NamedGroup::parse(&mut groups_buf) {
+                Ok(group) => { let _ = supported_groups.push(group); }
+                Err(_) => { /* skip unknown group */ }
+            }
+        }
+        Ok(Self { supported_groups })
     }
 
     pub fn encode(&self, buf: &mut CryptoBuffer) -> Result<(), TlsError> {

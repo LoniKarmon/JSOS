@@ -8,6 +8,27 @@
 #![feature(c_variadic)]
 
 extern crate alloc;
+extern crate log;
+
+// Minimal logger that routes `log` crate output to serial for TLS debugging.
+struct SerialLogger;
+impl log::Log for SerialLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            serial_println!("[TLS {}] {}", record.level(), record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+static SERIAL_LOGGER: SerialLogger = SerialLogger;
+
+pub fn init_logger() {
+    log::set_logger(&SERIAL_LOGGER).ok();
+    log::set_max_level(log::LevelFilter::Warn);
+}
 
 pub mod allocator;
 pub mod gdt;
