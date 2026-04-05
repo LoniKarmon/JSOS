@@ -244,6 +244,7 @@ lazy_static! {
         m.insert("snake.jsos".to_string(), include_str!("jsos/snake.jsos").to_string());
         m.insert("winman.jsos".to_string(), include_str!("jsos/winman.jsos").to_string());
         m.insert("demo_browser.jsos".to_string(), include_str!("jsos/demo_browser.jsos").to_string());
+        m.insert("demo_browser_v2.jsos".to_string(), include_str!("jsos/demo_browser_v2.jsos").to_string());
         m.insert("webremote.jsos".to_string(), include_str!("jsos/webremote.jsos").to_string());
         m.insert("sysman.jsos".to_string(), include_str!("jsos/sysman.jsos").to_string());
         m.insert("fontdemo.jsos".to_string(), include_str!("jsos/fontdemo.jsos").to_string());

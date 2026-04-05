@@ -268,6 +268,8 @@ const COMMANDS = {
         fn: () => console.log("PID " + os.spawn("snake.jsos")) },
     browser: { desc: "Open browser demo",
         fn: () => console.log("PID " + os.spawn("demo_browser.jsos")) },
+    browser2: { desc: "Open browser v2",
+        fn: () => console.log("PID " + os.spawn("demo_browser_v2.jsos")) },
     sysman: { desc: "System manager",
         fn: () => console.log("PID " + os.spawn("sysman.jsos")) },
     store: {

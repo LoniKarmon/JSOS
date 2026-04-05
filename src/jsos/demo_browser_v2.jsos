@@ -1,0 +1,375 @@
+// demo_browser_v2.jsos – Web browser for JSOS
+// Fetches and renders live web pages with scrolling and clickable links.
+
+import dom    from 'dom';
+import css    from 'css';
+import layout from 'layout';
+import paint  from 'paint';
+
+import { Window, Keys, Theme } from 'libjsos.js';
+
+// ── Constants ────────────────────────────────────────────────────────────────
+const W = 900, H = 600;
+const URL_BAR_H = 30;
+const STATUS_BAR_H = 24;
+const CONTENT_Y = URL_BAR_H;
+const CONTENT_H = H - URL_BAR_H - STATUS_BAR_H;
+const CHAR_W = 8;
+const CHAR_H = 16;
+const SCROLL_STEP = 48;
+const PAGE_SCROLL = CONTENT_H - 32;
+
+const T = Theme.dark();
+
+// ── State ────────────────────────────────────────────────────────────────────
+const win = new Window(30, 20, W, H);
+
+var urlText = 'https://en.m.wikipedia.org/wiki/Main_Page';
+var urlCursor = urlText.length;
+var urlFocused = true;
+var statusText = 'Type a URL and press Enter';
+var isLoading = false;
+
+// Page state
+var pageHtml = '';
+var pageCmds = [];
+var pageLinks = [];
+var pageTotalHeight = 0;
+var scrollY = 0;
+var history = [];
+var currentUrl = '';
+
+// ── HTML Pre-processing ──────────────────────────────────────────────────────
+function sanitizeHtml(html) {
+    html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+    html = html.replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+    html = html.replace(/<svg[\s\S]*?<\/svg>/gi, '');
+    html = html.replace(/<nav[\s\S]*?<\/nav>/gi, '');
+    html = html.replace(/<footer[\s\S]*?<\/footer>/gi, '');
+    html = html.replace(/<[^>]+class="[^"]*(?:mw-jump-link|noprint|navbox|sidebar|mw-editsection|reference|reflist|mw-references)[^"]*"[^>]*>[\s\S]*?<\/[^>]+>/gi, '');
+    html = html.replace(/<link[^>]*>/gi, '');
+    html = html.replace(/<meta[^>]*>/gi, '');
+    return html;
+}
+
+function rewriteWikipediaUrl(url) {
+    var m = url.match(/https?:\/\/(\w+)\.wikipedia\.org\/wiki\/(.+)/);
+    if (m) {
+        return 'https://' + m[1] + '.m.wikipedia.org/wiki/' + m[2];
+    }
+    return url;
+}
+
+function resolveUrl(href, baseUrl) {
+    if (!href) return '';
+    if (href.indexOf('http://') === 0 || href.indexOf('https://') === 0) return href;
+    if (href.indexOf('//') === 0) return 'https:' + href;
+    try {
+        var originMatch = baseUrl.match(/^(https?:\/\/[^\/]+)/);
+        if (!originMatch) return href;
+        var origin = originMatch[1];
+        if (href[0] === '/') return origin + href;
+        var lastSlash = baseUrl.lastIndexOf('/');
+        return baseUrl.slice(0, lastSlash + 1) + href;
+    } catch(e) {
+        return href;
+    }
+}
+
+// ── URL Bar ──────────────────────────────────────────────────────────────────
+function drawUrlBar() {
+    win.rect(0, 0, W, URL_BAR_H, T.surface[0], T.surface[1], T.surface[2]);
+    win.rect(0, URL_BAR_H - 1, W, 1, T.dim[0], T.dim[1], T.dim[2]);
+    var maxChars = Math.floor((W - 16) / CHAR_W);
+    var displayUrl = urlText.length > maxChars ? urlText.slice(urlText.length - maxChars) : urlText;
+    win.text(8, 7, displayUrl, T.text[0], T.text[1], T.text[2]);
+    if (urlFocused) {
+        var cursorOffset = Math.min(urlCursor, maxChars);
+        win.rect(8 + cursorOffset * CHAR_W, 6, 1, CHAR_H, T.accent[0], T.accent[1], T.accent[2]);
+    }
+}
+
+// ── Status Bar ───────────────────────────────────────────────────────────────
+function drawStatusBar() {
+    var y = H - STATUS_BAR_H;
+    win.rect(0, y, W, STATUS_BAR_H, T.surface[0], T.surface[1], T.surface[2]);
+    win.rect(0, y, W, 1, T.dim[0], T.dim[1], T.dim[2]);
+    var maxChars = Math.floor((W - 16) / CHAR_W);
+    var display = statusText.length > maxChars ? statusText.slice(0, maxChars) : statusText;
+    win.text(8, y + 4, display, T.dim[0], T.dim[1], T.dim[2]);
+    if (pageTotalHeight > CONTENT_H) {
+        var pct = Math.round(scrollY / Math.max(1, pageTotalHeight - CONTENT_H) * 100);
+        var scrollStr = pct + '%';
+        win.text(W - 8 - scrollStr.length * CHAR_W, y + 4, scrollStr, T.dim[0], T.dim[1], T.dim[2]);
+    }
+}
+
+// ── Content Area ─────────────────────────────────────────────────────────────
+function drawContent() {
+    win.rect(0, CONTENT_Y, W, CONTENT_H, T.bg[0], T.bg[1], T.bg[2]);
+
+    if (pageCmds.length === 0 && !isLoading && !currentUrl) {
+        win.text(W / 2 - 80, H / 2 - 8, 'Enter a URL to browse', T.dim[0], T.dim[1], T.dim[2]);
+        return;
+    }
+
+    if (pageCmds.length === 0 && !isLoading && currentUrl) {
+        win.text(8, CONTENT_Y + 8, 'Page returned no renderable content.', T.dim[0], T.dim[1], T.dim[2]);
+        return;
+    }
+
+    if (isLoading) {
+        win.text(W / 2 - 40, H / 2 - 8, 'Loading...', T.accent[0], T.accent[1], T.accent[2]);
+        return;
+    }
+
+    paint.paint(pageCmds, win.id, scrollY - CONTENT_Y, CONTENT_H);
+}
+
+// ── Full Render ──────────────────────────────────────────────────────────────
+function render() {
+    drawUrlBar();
+    drawContent();
+    drawStatusBar();
+    win.flush();
+}
+
+// ── Navigate ─────────────────────────────────────────────────────────────────
+async function navigate(url) {
+    if (isLoading) return;
+
+    url = rewriteWikipediaUrl(url);
+
+    if (currentUrl) history.push(currentUrl);
+    currentUrl = url;
+    urlText = url;
+    urlCursor = url.length;
+    urlFocused = false;
+    scrollY = 0;
+
+    isLoading = true;
+    statusText = 'Loading ' + url + '...';
+    pageCmds = [];
+    pageLinks = [];
+    render();
+
+    try {
+        var html = await os.fetch(url);
+        pageHtml = sanitizeHtml(html);
+
+        var domRoot = dom.parseHTML(pageHtml);
+        var rules = css.parseCSS(domRoot._embeddedCSS || '');
+        css.applyStyles(domRoot, rules, {});
+        var result = layout.layoutDOM(domRoot, { x: 0, y: CONTENT_Y, w: W, h: CONTENT_H });
+        pageCmds = result.cmds;
+        pageLinks = result.links;
+        pageTotalHeight = result.totalHeight;
+        scrollY = 0;
+
+        statusText = url;
+        isLoading = false;
+        render();
+    } catch(e) {
+        isLoading = false;
+        statusText = 'Error: ' + e;
+
+        var errorHtml = '<html><body style="background-color:#0a0a1a;color:#dc4646;padding:8px">' +
+            '<h1>Failed to load page</h1>' +
+            '<p style="color:#c8dcff">' + url + '</p>' +
+            '<p style="color:#dc4646">' + String(e).replace(/</g, '&lt;') + '</p>' +
+            '<p style="color:#607090">Press [ to go back, or type a new URL.</p>' +
+            '</body></html>';
+        var errDom = dom.parseHTML(errorHtml);
+        var errRules = css.parseCSS(errDom._embeddedCSS || '');
+        css.applyStyles(errDom, errRules, {});
+        var errResult = layout.layoutDOM(errDom, { x: 0, y: CONTENT_Y, w: W, h: CONTENT_H });
+        pageCmds = errResult.cmds;
+        pageLinks = errResult.links;
+        pageTotalHeight = errResult.totalHeight;
+        render();
+    }
+}
+
+// ── Keyboard Handler ─────────────────────────────────────────────────────────
+function handleKey(charCode) {
+    if (charCode === Keys.CTRL_Q || (charCode === Keys.ESCAPE && !urlFocused)) {
+        os.exit();
+        return;
+    }
+
+    // Ctrl+L — focus URL bar
+    if (charCode === 12) {
+        urlFocused = true;
+        urlCursor = urlText.length;
+        render();
+        return;
+    }
+
+    // '[' — go back (when not in URL bar)
+    if (charCode === 91 && !urlFocused) {
+        if (history.length > 0) {
+            var prev = history.pop();
+            currentUrl = '';
+            urlText = prev;
+            urlCursor = prev.length;
+            navigate(prev);
+        }
+        return;
+    }
+
+    // Scroll keys (when not in URL bar)
+    if (!urlFocused) {
+        var maxScroll = Math.max(0, pageTotalHeight - CONTENT_H);
+        if (charCode === Keys.UP) {
+            scrollY = Math.max(0, scrollY - SCROLL_STEP);
+            render();
+            return;
+        }
+        if (charCode === Keys.DOWN) {
+            scrollY = Math.min(maxScroll, scrollY + SCROLL_STEP);
+            render();
+            return;
+        }
+        if (charCode === Keys.PAGE_UP) {
+            scrollY = Math.max(0, scrollY - PAGE_SCROLL);
+            render();
+            return;
+        }
+        if (charCode === Keys.PAGE_DOWN) {
+            scrollY = Math.min(maxScroll, scrollY + PAGE_SCROLL);
+            render();
+            return;
+        }
+        if (charCode === Keys.CTRL_A) {
+            scrollY = 0;
+            render();
+            return;
+        }
+        if (charCode === Keys.CTRL_E) {
+            scrollY = maxScroll;
+            render();
+            return;
+        }
+        // Any printable key focuses URL bar
+        if (Keys.isPrintable(charCode)) {
+            urlFocused = true;
+            urlText = '';
+            urlCursor = 0;
+        } else {
+            return;
+        }
+    }
+
+    // URL bar input
+    if (Keys.isEnter(charCode)) {
+        if (urlText.length > 0) {
+            var navUrl = urlText;
+            if (navUrl.indexOf('://') === -1) navUrl = 'https://' + navUrl;
+            navigate(navUrl);
+        }
+        return;
+    }
+    if (charCode === Keys.ESCAPE) {
+        urlFocused = false;
+        render();
+        return;
+    }
+    if (Keys.isBackspace(charCode)) {
+        if (urlCursor > 0) {
+            urlText = urlText.slice(0, urlCursor - 1) + urlText.slice(urlCursor);
+            urlCursor--;
+        }
+        render();
+        return;
+    }
+    if (charCode === Keys.DELETE) {
+        if (urlCursor < urlText.length) {
+            urlText = urlText.slice(0, urlCursor) + urlText.slice(urlCursor + 1);
+        }
+        render();
+        return;
+    }
+    if (charCode === Keys.LEFT) {
+        if (urlCursor > 0) urlCursor--;
+        render();
+        return;
+    }
+    if (charCode === Keys.RIGHT) {
+        if (urlCursor < urlText.length) urlCursor++;
+        render();
+        return;
+    }
+    if (Keys.isPrintable(charCode)) {
+        urlText = urlText.slice(0, urlCursor) + Keys.toChar(charCode) + urlText.slice(urlCursor);
+        urlCursor++;
+        render();
+    }
+}
+
+// ── Mouse Handler ────────────────────────────────────────────────────────────
+var lastHoverLink = '';
+
+function handleMouse(mx, my, buttons) {
+    var contentMouseY = my - CONTENT_Y + scrollY;
+
+    // Hover: show link URL in status bar
+    var hoveredLink = '';
+    for (var i = 0; i < pageLinks.length; i++) {
+        var link = pageLinks[i];
+        if (mx >= link.x && mx <= link.x + link.w &&
+            contentMouseY >= link.y && contentMouseY <= link.y + link.h) {
+            hoveredLink = link.href;
+            break;
+        }
+    }
+    if (hoveredLink !== lastHoverLink) {
+        lastHoverLink = hoveredLink;
+        if (hoveredLink) {
+            statusText = resolveUrl(hoveredLink, currentUrl);
+        } else {
+            statusText = currentUrl || 'Type a URL and press Enter';
+        }
+        drawStatusBar();
+        win.flush();
+    }
+
+    // Click
+    if (buttons & 1) {
+        if (my < URL_BAR_H) {
+            urlFocused = true;
+            render();
+            return;
+        }
+        if (hoveredLink) {
+            var fullUrl = resolveUrl(hoveredLink, currentUrl);
+            if (fullUrl) {
+                urlText = fullUrl;
+                urlCursor = fullUrl.length;
+                navigate(fullUrl);
+            }
+        } else {
+            urlFocused = false;
+            render();
+        }
+    }
+}
+
+// ── Scroll Handler ───────────────────────────────────────────────────────────
+function handleScroll(delta) {
+    scrollY += delta * SCROLL_STEP;
+    if (scrollY < 0) scrollY = 0;
+    var maxScroll = Math.max(0, pageTotalHeight - CONTENT_H);
+    if (scrollY > maxScroll) scrollY = maxScroll;
+    render();
+}
+
+// ── IPC ──────────────────────────────────────────────────────────────────────
+win.installIpc({
+    render: render,
+    key: function(charCode) { handleKey(charCode); },
+    mouse: function(mx, my, buttons) { handleMouse(mx, my, buttons); },
+    scroll: function(delta) { handleScroll(delta); },
+});
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+render();

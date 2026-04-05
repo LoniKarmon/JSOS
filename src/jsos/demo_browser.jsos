@@ -61,7 +61,8 @@ function updateLayout() {
     css.applyStyles(domRoot, rules, {});
 
     // 3. Layout (calculate absolute positions)
-    cachedCmds = layout.layoutDOM(domRoot, { x: 0, y: 0, w: W, h: H });
+    var result = layout.layoutDOM(domRoot, { x: 0, y: 0, w: W, h: H });
+    cachedCmds = result.cmds;
 }
 
 function render() {

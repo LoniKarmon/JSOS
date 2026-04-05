@@ -158,6 +158,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             ("snake.jsos",        include_str!("jsos/snake.jsos")),
             ("winman.jsos",       include_str!("jsos/winman.jsos")),
             ("demo_browser.jsos", include_str!("jsos/demo_browser.jsos")),
+            ("demo_browser_v2.jsos", include_str!("jsos/demo_browser_v2.jsos")),
             ("webremote.jsos",    include_str!("jsos/webremote.jsos")),
             ("sysman.jsos",       include_str!("jsos/sysman.jsos")),
             ("drawtest.jsos",     include_str!("jsos/drawtest.jsos")),
