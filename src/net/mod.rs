@@ -952,8 +952,25 @@ pub fn poll_network() {
                                 if let Ok(s) = core::str::from_utf8(&job.tls_read_buffer[..n]) {
                                     job.response.push_str(s);
                                 }
-                                job.start_ticks = current_ticks; 
-                                continue; 
+                                job.start_ticks = current_ticks;
+                                // Check if we have full HTTP response (headers + Content-Length body)
+                                if let Some(hdr_end) = job.response.find("\r\n\r\n") {
+                                    let headers = &job.response[..hdr_end];
+                                    if let Some(cl_line) = headers.lines().find(|l| l.to_lowercase().starts_with("content-length:")) {
+                                        if let Some(cl_val) = cl_line.split(':').nth(1) {
+                                            if let Ok(cl) = cl_val.trim().parse::<usize>() {
+                                                let body_start = hdr_end + 4;
+                                                let body_received = job.response.len() - body_start;
+                                                if body_received >= cl {
+                                                    serial_println!("[FETCH] Full response received ({} bytes body) from {}", cl, job.host);
+                                                    handle_redirect_or_finish(idx, job, sockets, &mut finished_jobs);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                continue;
                             } else {
                                 handle_redirect_or_finish(idx, job, sockets, &mut finished_jobs);
                                 break;
