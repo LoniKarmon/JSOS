@@ -24,6 +24,7 @@ use alloc::vec::Vec;
 use alloc::format;
 
 pub mod rtl8139;
+pub mod e1000e;
 pub mod nic;
 pub mod tftp_job;
 pub mod ftp_job;
