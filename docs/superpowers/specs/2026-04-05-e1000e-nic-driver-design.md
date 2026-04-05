@@ -128,7 +128,7 @@ The Intel I219-LM is an e1000e-family Ethernet controller using memory-mapped I/
 3. Read BAR0 physical address, compute MMIO virtual address
 4. Device reset: write `CTRL.RST` (bit 26), wait for clear
 5. Disable interrupts: write `0xFFFFFFFF` to IMC
-6. Read MAC address from RAL/RAH registers
+6. Read MAC address from RAL/RAH registers (firmware typically pre-loads these from NVM/EEPROM during platform init). If MAC reads as `00:00:00:00:00:00`, fall back to reading from EEPROM via the EERD register
 7. Allocate TX/RX descriptor rings and packet buffers (static arrays)
 8. Initialize all RX descriptors with pre-allocated buffer physical addresses
 9. Program TX ring: TDBAL/TDBAH = ring phys addr, TDLEN = 4096, TDH = 0, TDT = 0
@@ -233,7 +233,11 @@ We scan for all known I219 variants to be safe. The driver is identical for all 
 - Multiple NIC support (one NIC active at a time)
 - Intel I225/I226 (different driver family)
 
-## 7. Testing Strategy
+## 7. Notes
+
+**BSS size increase:** The static descriptor rings and packet buffers add ~1MB to the `.bss` section (256 * 2048 * 2 for RX+TX buffers, plus ring descriptors). This is fine for the 1GB RAM QEMU config and the 16GB EliteDesk, but worth noting if the kernel memory footprint matters.
+
+## 8. Testing Strategy
 
 - **QEMU:** Switch to `-device e1000e`, verify DHCP, DNS, `os.fetch()`, TFTP, FTP all work
 - **Bare metal:** Boot on EliteDesk, verify PCI detection, link up, DHCP, basic networking
