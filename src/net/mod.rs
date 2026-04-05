@@ -544,9 +544,12 @@ pub fn start_websocket(pid: u32, url: &str, alpn_protocols: Option<alloc::vec::V
 }
 
 pub fn init() {
-    let nic_opt: Option<nic::Nic> = if let Some(rtl) = rtl8139::init() {
+    let nic_opt: Option<nic::Nic> = if let Some(nic) = e1000e::init() {
+        serial_println!("[INFO] Using Intel e1000e NIC driver");
+        Some(nic::Nic::E1000e(nic))
+    } else if let Some(nic) = rtl8139::init() {
         serial_println!("[INFO] Using RTL8139 NIC driver");
-        Some(nic::Nic::Rtl8139(rtl))
+        Some(nic::Nic::Rtl8139(nic))
     } else {
         None
     };

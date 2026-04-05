@@ -3,6 +3,7 @@ use alloc::vec;
 use smoltcp::phy::{Device, DeviceCapabilities, RxToken, TxToken, Medium};
 use smoltcp::time::Instant;
 use super::rtl8139::Rtl8139;
+use super::e1000e::E1000e;
 
 pub trait NicDriver {
     fn mac_address(&self) -> [u8; 6];
@@ -13,20 +14,33 @@ pub trait NicDriver {
 
 pub enum Nic {
     Rtl8139(Rtl8139),
+    E1000e(E1000e),
 }
 
 impl NicDriver for Nic {
     fn mac_address(&self) -> [u8; 6] {
-        match self { Nic::Rtl8139(n) => n.mac_address() }
+        match self {
+            Nic::Rtl8139(n) => n.mac_address(),
+            Nic::E1000e(n) => n.mac_address(),
+        }
     }
     fn receive_packet(&mut self) -> Option<Vec<u8>> {
-        match self { Nic::Rtl8139(n) => n.receive_packet() }
+        match self {
+            Nic::Rtl8139(n) => n.receive_packet(),
+            Nic::E1000e(n) => n.receive_packet(),
+        }
     }
     fn transmit_packet(&mut self, data: &[u8]) {
-        match self { Nic::Rtl8139(n) => n.transmit_packet(data) }
+        match self {
+            Nic::Rtl8139(n) => n.transmit_packet(data),
+            Nic::E1000e(n) => n.transmit_packet(data),
+        }
     }
     fn capabilities(&self) -> DeviceCapabilities {
-        match self { Nic::Rtl8139(n) => NicDriver::capabilities(n) }
+        match self {
+            Nic::Rtl8139(n) => NicDriver::capabilities(n),
+            Nic::E1000e(n) => NicDriver::capabilities(n),
+        }
     }
 }
 
