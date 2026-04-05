@@ -1,12 +1,9 @@
-use lazy_static::lazy_static;
-use spin::Mutex;
 use x86_64::instructions::port::{Port, PortWriteOnly};
 use crate::pci::{PciDevice, scan_pci, enable_bus_mastering};
 use crate::serial_println;
 use alloc::vec::Vec;
 use alloc::vec;
-use smoltcp::phy::{Device, DeviceCapabilities, RxToken, TxToken, Medium};
-use smoltcp::time::Instant;
+use smoltcp::phy::{DeviceCapabilities, Medium};
 
 const RTL8139_VENDOR_ID: u16 = 0x10EC;
 const RTL8139_DEVICE_ID: u16 = 0x8139;
@@ -47,10 +44,6 @@ static mut RTL_TX_BUFFERS: [TxBufferWrapper; 4] = [
     TxBufferWrapper([0; TX_BUF_SIZE]),
     TxBufferWrapper([0; TX_BUF_SIZE]),
 ];
-
-lazy_static! {
-    pub static ref NIC: Mutex<Option<Rtl8139>> = Mutex::new(None);
-}
 
 impl Rtl8139 {
     pub fn new(device: &PciDevice) -> Option<Self> {
@@ -216,49 +209,16 @@ impl Rtl8139 {
     }
 }
 
-pub struct RtlRxToken(Vec<u8>);
-
-impl RxToken for RtlRxToken {
-    fn consume<R, F>(self, f: F) -> R
-    where
-        F: FnOnce(&mut [u8]) -> R,
-    {
-        let mut packet = self.0;
-        f(&mut packet)
+impl super::nic::NicDriver for Rtl8139 {
+    fn mac_address(&self) -> [u8; 6] {
+        self.mac_address
     }
-}
-
-pub struct RtlTxToken<'a>(&'a mut Rtl8139);
-
-impl<'a> TxToken for RtlTxToken<'a> {
-    fn consume<R, F>(self, len: usize, f: F) -> R
-    where
-        F: FnOnce(&mut [u8]) -> R,
-    {
-        let mut buffer = vec![0; len];
-        let result = f(&mut buffer);
-
-        self.0.transmit_packet(&buffer);
-
-        result
+    fn receive_packet(&mut self) -> Option<Vec<u8>> {
+        self.receive_packet()
     }
-}
-
-impl Device for Rtl8139 {
-    type RxToken<'a> = RtlRxToken;
-    type TxToken<'a> = RtlTxToken<'a>;
-
-    fn receive<'a>(&'a mut self, _timestamp: Instant) -> Option<(Self::RxToken<'a>, Self::TxToken<'a>)> {
-        match self.receive_packet() {
-            Some(packet) => Some((RtlRxToken(packet), RtlTxToken(self))),
-            None => None,
-        }
+    fn transmit_packet(&mut self, data: &[u8]) {
+        self.transmit_packet(data);
     }
-
-    fn transmit<'a>(&'a mut self, _timestamp: Instant) -> Option<Self::TxToken<'a>> {
-        Some(RtlTxToken(self))
-    }
-
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
         caps.max_transmission_unit = 1500;
@@ -268,19 +228,20 @@ impl Device for Rtl8139 {
     }
 }
 
-pub fn init() {
+pub fn init() -> Option<Rtl8139> {
     serial_println!("Scanning PCI bus for RTL8139...");
     let devices = scan_pci();
     serial_println!("Found {} total PCI devices attached.", devices.len());
-    
-    for dev in devices {
-        serial_println!("PCI Device [Vendor: 0x{:04X}, Device: 0x{:04X}] at bus {} device {}", dev.vendor_id, dev.device_id, dev.bus, dev.device);
+
+    for dev in &devices {
+        serial_println!("PCI Device [Vendor: 0x{:04X}, Device: 0x{:04X}] at bus {} device {}",
+            dev.vendor_id, dev.device_id, dev.bus, dev.device);
         if dev.vendor_id == RTL8139_VENDOR_ID && dev.device_id == RTL8139_DEVICE_ID {
             serial_println!("==> MATCHED RTL8139 PCI device!");
-            if let Some(nic) = Rtl8139::new(&dev) {
-                *NIC.lock() = Some(nic);
-                break;
+            if let Some(nic) = Rtl8139::new(dev) {
+                return Some(nic);
             }
         }
     }
+    None
 }

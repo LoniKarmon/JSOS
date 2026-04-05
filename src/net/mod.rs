@@ -1,6 +1,5 @@
 use crate::println;
 use crate::serial_println;
-use rtl8139::NIC;
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::dhcpv4::{Socket as Dhcpv4Socket};
 use smoltcp::socket::dns::{Socket as DnsSocket, GetQueryResultError};
@@ -25,6 +24,7 @@ use alloc::vec::Vec;
 use alloc::format;
 
 pub mod rtl8139;
+pub mod nic;
 pub mod tftp_job;
 pub mod ftp_job;
 
@@ -102,6 +102,7 @@ impl Write for NonBlockingSmoltcpIo {
 pub static mut FETCH_SOCKETS_PTR: *mut SocketSet<'static> = core::ptr::null_mut();
 
 lazy_static! {
+    pub static ref NIC: Mutex<Option<nic::Nic>> = Mutex::new(None);
     pub static ref IFACE: Mutex<Option<Interface>> = Mutex::new(None);
     pub static ref SOCKETS: Mutex<Option<SocketSet<'static>>> = Mutex::new(None);
     pub static ref FETCH_JOBS: Mutex<alloc::vec::Vec<Box<FetchJob>>> = Mutex::new(alloc::vec::Vec::new());
@@ -364,7 +365,7 @@ pub fn base64_decode(input: &str) -> Vec<u8> {
 pub fn get_net_info() -> alloc::string::String {
     let mut info = alloc::string::String::new();
     if let Some(ref nic) = *NIC.lock() {
-        let mac = EthernetAddress::from_bytes(&nic.mac_address());
+        let mac = EthernetAddress::from_bytes(&nic::NicDriver::mac_address(nic));
         info.push_str(&alloc::format!("MAC: {}\n", mac));
     }
     if let Some(ref iface) = *IFACE.lock() {
@@ -542,17 +543,25 @@ pub fn start_websocket(pid: u32, url: &str, alpn_protocols: Option<alloc::vec::V
 }
 
 pub fn init() {
-    rtl8139::init();
+    let nic_opt: Option<nic::Nic> = if let Some(rtl) = rtl8139::init() {
+        serial_println!("[INFO] Using RTL8139 NIC driver");
+        Some(nic::Nic::Rtl8139(rtl))
+    } else {
+        None
+    };
 
-    let mut nic_guard = NIC.lock();
-    if let Some(ref mut nic) = *nic_guard {
-        let mac_addr = nic.mac_address();
+    if let Some(nic_instance) = nic_opt {
+        let mac_addr = nic::NicDriver::mac_address(&nic_instance);
         let hw_addr = HardwareAddress::Ethernet(EthernetAddress(mac_addr));
 
         let mut config = Config::new(hw_addr);
         config.random_seed = 0x12345678;
 
-        let iface = Interface::new(config, &mut *nic, get_timestamp());
+        *NIC.lock() = Some(nic_instance);
+
+        let mut nic_guard = NIC.lock();
+        let nic = nic_guard.as_mut().unwrap();
+        let iface = Interface::new(config, nic, get_timestamp());
         let mut sockets = SocketSet::new(vec![]);
 
         // DHCP
