@@ -131,6 +131,12 @@ pub struct TlsHandshakeContext {
     pub rng: rand_chacha::ChaCha20Rng,
 }
 
+fn find_dns_handle(sockets: &SocketSet) -> Option<SocketHandle> {
+    sockets
+        .iter()
+        .find_map(|(h, s)| if matches!(s, smoltcp::socket::Socket::Dns(_)) { Some(h) } else { None })
+}
+
 // ── Per-job fetch state ────────────────────────────────────────────────────
 
 pub struct FetchJob {
@@ -673,10 +679,15 @@ pub fn poll_network() {
 
             // -- 1: kick off DNS query -------------------------------------
             1 => {
-                let dns_handle = sockets
-                    .iter()
-                    .find_map(|(h, s)| if matches!(s, smoltcp::socket::Socket::Dns(_)) { Some(h) } else { None })
-                    .unwrap();
+                let dns_handle = match find_dns_handle(sockets) {
+                    Some(h) => h,
+                    None => {
+                        serial_println!("[FETCH] No DNS socket registered");
+                        job.response = alloc::string::String::from("Error: DNS Unavailable.");
+                        finished_jobs.push(idx);
+                        continue;
+                    }
+                };
                 let dns_socket = sockets.get_mut::<DnsSocket>(dns_handle);
 
                 match dns_socket.start_query(iface.context(), &job.host, DnsQueryType::A) {
@@ -695,12 +706,25 @@ pub fn poll_network() {
 
             // -- 2: wait for DNS answer ------------------------------------
             2 => {
-                let dns_handle = sockets
-                    .iter()
-                    .find_map(|(h, s)| if matches!(s, smoltcp::socket::Socket::Dns(_)) { Some(h) } else { None })
-                    .unwrap();
+                let dns_handle = match find_dns_handle(sockets) {
+                    Some(h) => h,
+                    None => {
+                        serial_println!("[FETCH] DNS socket vanished mid-query");
+                        job.response = alloc::string::String::from("Error: DNS Unavailable.");
+                        finished_jobs.push(idx);
+                        continue;
+                    }
+                };
                 let dns_socket = sockets.get_mut::<DnsSocket>(dns_handle);
-                let qh = job.dns_query_handle.unwrap();
+                let qh = match job.dns_query_handle {
+                    Some(h) => h,
+                    None => {
+                        serial_println!("[FETCH] DNS query handle missing in state 2");
+                        job.response = alloc::string::String::from("Error: DNS Query Lost.");
+                        finished_jobs.push(idx);
+                        continue;
+                    }
+                };
 
                 match dns_socket.get_query_result(qh) {
                     Ok(addrs) => {
@@ -721,6 +745,16 @@ pub fn poll_network() {
 
             // -- 3: allocate a FRESH TCP socket and initiate connect --------
             3 => {
+                let remote_addr = match job.remote_addr {
+                    Some(a) => a,
+                    None => {
+                        serial_println!("[FETCH] Remote addr missing in state 3");
+                        job.response = alloc::string::String::from("Error: DNS Resolution Failed.");
+                        finished_jobs.push(idx);
+                        continue;
+                    }
+                };
+
                 // Allocate a large RX buffer for certificate chains
                 let tcp_rx = tcp::SocketBuffer::new(vec![0u8; 32768]);
                 let tcp_tx = tcp::SocketBuffer::new(vec![0u8; 16384]);
@@ -730,10 +764,10 @@ pub fn poll_network() {
 
                 let cx = iface.context();
                 let port = job.port;
-                let remote_endpoint = (job.remote_addr.unwrap(), port);
+                let remote_endpoint = (remote_addr, port);
                 let local_port = next_local_port();
 
-                serial_println!("[FETCH] Connecting to {}:{} via local:{}", job.remote_addr.unwrap(), port, local_port);
+                serial_println!("[FETCH] Connecting to {}:{} via local:{}", remote_addr, port, local_port);
 
                 let tcp_socket = sockets.get_mut::<TcpSocket>(handle);
                 match tcp_socket.connect(cx, remote_endpoint, local_port) {
@@ -750,7 +784,15 @@ pub fn poll_network() {
 
             // -- 4: wait for Established, then transition to Handshake or IO --
             4 => {
-                let handle = job.tcp_handle.unwrap();
+                let handle = match job.tcp_handle {
+                    Some(h) => h,
+                    None => {
+                        serial_println!("[FETCH] TCP handle missing in state 4");
+                        job.response = alloc::string::String::from("Error: Internal Socket State.");
+                        finished_jobs.push(idx);
+                        continue;
+                    }
+                };
                 let tcp_socket = sockets.get_mut::<TcpSocket>(handle);
 
                 match tcp_socket.state() {
@@ -777,7 +819,15 @@ pub fn poll_network() {
 
             // -- 5: TLS Handshake (Non-blocking) --
             5 => {
-                let handle = job.tcp_handle.unwrap();
+                let handle = match job.tcp_handle {
+                    Some(h) => h,
+                    None => {
+                        serial_println!("[FETCH] TCP handle missing in state 5");
+                        job.response = alloc::string::String::from("Error: Internal Socket State.");
+                        cleanup_job(job, sockets, &mut finished_jobs, idx);
+                        continue;
+                    }
+                };
                 let handshake_result = {
                     use futures_util::task::noop_waker_ref;
                     
@@ -1026,7 +1076,15 @@ pub fn poll_network() {
 
             // -- 8: Plain HTTP Send Request --
             8 => {
-                let handle = job.tcp_handle.unwrap();
+                let handle = match job.tcp_handle {
+                    Some(h) => h,
+                    None => {
+                        serial_println!("[FETCH] TCP handle missing in state 8");
+                        job.response = alloc::string::String::from("Error: Internal Socket State.");
+                        finished_jobs.push(idx);
+                        continue;
+                    }
+                };
                 let socket = sockets.get_mut::<TcpSocket>(handle);
                 if socket.can_send() {
                     let mut request = alloc::format!("{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept-Encoding: identity\r\n", job.method, job.path, job.host);
@@ -1053,7 +1111,15 @@ pub fn poll_network() {
 
             // -- 9: Plain HTTP Receive Response (Non-blocking + Redirect) --
             9 => {
-                let handle = job.tcp_handle.unwrap();
+                let handle = match job.tcp_handle {
+                    Some(h) => h,
+                    None => {
+                        serial_println!("[FETCH] TCP handle missing in state 9");
+                        job.response = alloc::string::String::from("Error: Internal Socket State.");
+                        finished_jobs.push(idx);
+                        continue;
+                    }
+                };
                 let tcp_socket = sockets.get_mut::<TcpSocket>(handle);
                 if tcp_socket.can_recv() {
                     let mut buf = [0u8; 1024];
@@ -1229,7 +1295,15 @@ fn poll_websocket_jobs(sockets: &mut SocketSet, iface: &mut Interface, current_t
                     if iface.ipv4_addr().is_some() { job.state = 1; }
                 }
                 1 => { // DNS Search
-                    let dns_handle = sockets.iter().find_map(|(h, s)| if matches!(s, smoltcp::socket::Socket::Dns(_)) { Some(h) } else { None }).unwrap();
+                    let dns_handle = match find_dns_handle(sockets) {
+                        Some(h) => h,
+                        None => {
+                            serial_println!("[WS] No DNS socket registered");
+                            job.closed = true;
+                            finished_jobs.push(id);
+                            continue;
+                        }
+                    };
                     let dns_socket = sockets.get_mut::<DnsSocket>(dns_handle);
                     match dns_socket.start_query(iface.context(), &job.host, DnsQueryType::A) {
                         Ok(qh) => { job.dns_query_handle = Some(qh); job.state = 2; }
@@ -1237,9 +1311,25 @@ fn poll_websocket_jobs(sockets: &mut SocketSet, iface: &mut Interface, current_t
                     }
                 }
                 2 => { // DNS Wait
-                    let dns_handle = sockets.iter().find_map(|(h, s)| if matches!(s, smoltcp::socket::Socket::Dns(_)) { Some(h) } else { None }).unwrap();
+                    let dns_handle = match find_dns_handle(sockets) {
+                        Some(h) => h,
+                        None => {
+                            serial_println!("[WS] DNS socket vanished mid-query");
+                            job.closed = true;
+                            finished_jobs.push(id);
+                            continue;
+                        }
+                    };
                     let dns_socket = sockets.get_mut::<DnsSocket>(dns_handle);
-                    let qh = job.dns_query_handle.unwrap();
+                    let qh = match job.dns_query_handle {
+                        Some(h) => h,
+                        None => {
+                            serial_println!("[WS] DNS query handle missing in state 2");
+                            job.closed = true;
+                            finished_jobs.push(id);
+                            continue;
+                        }
+                    };
                     match dns_socket.get_query_result(qh) {
                         Ok(addrs) => { if let Some(addr) = addrs.first() { job.remote_addr = Some(*addr); job.state = 3; } }
                         Err(GetQueryResultError::Pending) => {}
@@ -1247,13 +1337,22 @@ fn poll_websocket_jobs(sockets: &mut SocketSet, iface: &mut Interface, current_t
                     }
                 }
                 3 => { // TCP Connect
+                    let remote_addr = match job.remote_addr {
+                        Some(a) => a,
+                        None => {
+                            serial_println!("[WS] Remote addr missing in state 3");
+                            job.closed = true;
+                            finished_jobs.push(id);
+                            continue;
+                        }
+                    };
                     let tcp_rx = tcp::SocketBuffer::new(vec![0u8; 16384]);
                     let tcp_tx = tcp::SocketBuffer::new(vec![0u8; 16384]);
                     let tcp_socket = TcpSocket::new(tcp_rx, tcp_tx);
                     let handle = sockets.add(tcp_socket);
                     job.tcp_handle = Some(handle);
                     let cx = iface.context();
-                    let remote_endpoint = (job.remote_addr.unwrap(), job.port);
+                    let remote_endpoint = (remote_addr, job.port);
                     let local_port = next_local_port();
                     let tcp_socket = sockets.get_mut::<TcpSocket>(handle);
                     match tcp_socket.connect(cx, remote_endpoint, local_port) {
@@ -1262,7 +1361,15 @@ fn poll_websocket_jobs(sockets: &mut SocketSet, iface: &mut Interface, current_t
                     }
                 }
                 4 => { // TCP Wait
-                    let handle = job.tcp_handle.unwrap();
+                    let handle = match job.tcp_handle {
+                        Some(h) => h,
+                        None => {
+                            serial_println!("[WS] TCP handle missing in state 4");
+                            job.closed = true;
+                            finished_jobs.push(id);
+                            continue;
+                        }
+                    };
                     let tcp_socket = sockets.get_mut::<TcpSocket>(handle);
                     match tcp_socket.state() {
                         State::Established => { if job.is_https { job.state = 5; } else { job.state = 6; } job.last_activity_ticks = current_ticks; }
@@ -1271,7 +1378,15 @@ fn poll_websocket_jobs(sockets: &mut SocketSet, iface: &mut Interface, current_t
                     }
                 }
                 5 => { // TLS Handshake
-                    let handle = job.tcp_handle.unwrap();
+                    let handle = match job.tcp_handle {
+                        Some(h) => h,
+                        None => {
+                            serial_println!("[WS] TCP handle missing in state 5");
+                            cleanup_ws_job_internal(job, sockets);
+                            finished_jobs.push(id);
+                            continue;
+                        }
+                    };
                     if job.tls_connection_ptr_val == 0 {
                         let read_buf = Box::new([0u8; 16384]);
                         let write_buf = Box::new([0u8; 16384]);
@@ -1326,10 +1441,14 @@ fn poll_websocket_jobs(sockets: &mut SocketSet, iface: &mut Interface, current_t
                             core::task::Poll::Ready(Err(_)) => { cleanup_ws_job_internal(job, sockets); finished_jobs.push(id); }
                             core::task::Poll::Pending => {}
                         }
-                    } else {
-                        let handle = job.tcp_handle.unwrap();
+                    } else if let Some(handle) = job.tcp_handle {
                         let socket = sockets.get_mut::<TcpSocket>(handle);
                         if socket.can_send() { let _ = socket.send_slice(upgrade_req.as_bytes()); job.state = 7; job.last_activity_ticks = current_ticks; }
+                    } else {
+                        serial_println!("[WS] TCP handle missing in state 6");
+                        cleanup_ws_job_internal(job, sockets);
+                        finished_jobs.push(id);
+                        continue;
                     }
                 }
                 7 => { // Wait for Upgrade Response
@@ -1349,13 +1468,17 @@ fn poll_websocket_jobs(sockets: &mut SocketSet, iface: &mut Interface, current_t
                             core::task::Poll::Ready(Ok(n)) => { unsafe { let _ = Box::from_raw(future_ptr); } job.tls_read_future_ptr_val = 0; if n > 0 { data.extend_from_slice(&job.tls_read_buffer[..n]); } }
                             _ => {}
                         }
-                    } else {
-                        let handle = job.tcp_handle.unwrap();
+                    } else if let Some(handle) = job.tcp_handle {
                         let socket = sockets.get_mut::<TcpSocket>(handle);
                         if socket.can_recv() {
                             let mut buf = [0u8; 1024];
                             if let Ok(n) = socket.recv_slice(&mut buf) { if n > 0 { data.extend_from_slice(&buf[..n]); } }
                         }
+                    } else {
+                        serial_println!("[WS] TCP handle missing in state 7");
+                        cleanup_ws_job_internal(job, sockets);
+                        finished_jobs.push(id);
+                        continue;
                     }
                     if !data.is_empty() {
                         if let Ok(resp) = core::str::from_utf8(&data) {
@@ -1424,8 +1547,7 @@ fn poll_ws_frames(job: &mut WebSocketJob, sockets: &mut SocketSet, current_ticks
 
         if job.is_https {
              job.tls_send_data.extend_from_slice(&frame);
-        } else {
-            let handle = job.tcp_handle.unwrap();
+        } else if let Some(handle) = job.tcp_handle {
             let socket = sockets.get_mut::<TcpSocket>(handle);
             if socket.can_send() {
                 let _ = socket.send_slice(&frame);
@@ -1480,8 +1602,7 @@ fn poll_ws_frames(job: &mut WebSocketJob, sockets: &mut SocketSet, current_ticks
             }
             _ => {}
         }
-    } else {
-        let handle = job.tcp_handle.unwrap();
+    } else if let Some(handle) = job.tcp_handle {
         let socket = sockets.get_mut::<TcpSocket>(handle);
         if socket.can_recv() {
             let mut buf = [0u8; 2048];
@@ -1549,8 +1670,8 @@ fn poll_ws_frames(job: &mut WebSocketJob, sockets: &mut SocketSet, current_ticks
                 let pong = [0x8A, 0x00];
                 if job.is_https {
                     job.tls_send_data.extend_from_slice(&pong);
-                } else {
-                    let socket = sockets.get_mut::<TcpSocket>(job.tcp_handle.unwrap());
+                } else if let Some(handle) = job.tcp_handle {
+                    let socket = sockets.get_mut::<TcpSocket>(handle);
                     let _ = socket.send_slice(&pong);
                 }
             }
