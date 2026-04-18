@@ -1198,8 +1198,13 @@ unsafe extern "C" fn js_os_spawn(ctx: *mut JSContext, _this: JSValue, argc: c_in
 
     if let Some(code) = source {
         crate::serial_println!("[os.spawn] Spawning: {}", name);
-        let pid = crate::process::spawn_process(&name, &code);
-        js_int(pid as i32)
+        match crate::process::spawn_process(&name, &code) {
+            Some(pid) => js_int(pid as i32),
+            None => {
+                crate::serial_println!("[os.spawn] Spawn failed for {}", name);
+                js_int(0)
+            }
+        }
     } else {
         crate::serial_println!("[os.spawn] Unknown Binary {}", name);
         js_int(0)

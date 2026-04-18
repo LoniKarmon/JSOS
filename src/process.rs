@@ -206,13 +206,22 @@ fn transform_imports(source: &str) -> String {
 // ── Process lifecycle ─────────────────────────────────────────────────────
 
 /// Spawns a new JavaScript process with the given name and source code.
-pub fn spawn_process(name: &str, js_source: &str) -> u32 {
-    let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
-
+///
+/// Returns `None` if the QuickJS sandbox could not be initialized (typically
+/// out of memory). The PID counter is not incremented in that case.
+pub fn spawn_process(name: &str, js_source: &str) -> Option<u32> {
     let mut sandbox = match QuickJsSandbox::new() {
         Ok(s) => s,
-        Err(_) => panic!("Failed to initialize JS sandbox"),
+        Err(e) => {
+            crate::serial_println!(
+                "[PROCESS] Failed to init JS sandbox for '{}': {:?}",
+                name, e
+            );
+            return None;
+        }
     };
+
+    let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
 
     let pid_script = alloc::format!(
         "globalThis.__PID = {}; globalThis.__PROCESS_NAME = '{}';",
@@ -242,7 +251,7 @@ pub fn spawn_process(name: &str, js_source: &str) -> u32 {
         if let Err(e) = sandbox.eval(&transformed) {
             drop(sandbox);
             crash_process(pid, name, &e);
-            return pid;
+            return Some(pid);
         }
         sandbox.enable_preemption();
     }
@@ -255,7 +264,7 @@ pub fn spawn_process(name: &str, js_source: &str) -> u32 {
         kill_process_and_cleanup(pid);
     }
 
-    pid
+    Some(pid)
 }
 
 /// Mark a process dead and immediately release its external resources

@@ -186,8 +186,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     serial_println!("[main] starting spawn_process");
-    os::process::spawn_process("winman.jsos", include_str!("jsos/winman.jsos"));
-    os::process::spawn_process("seriallog.jsos", include_str!("jsos/seriallog.jsos"));
+    if os::process::spawn_process("winman.jsos", include_str!("jsos/winman.jsos")).is_none() {
+        serial_println!("[main] FATAL: failed to spawn winman.jsos");
+    }
+    if os::process::spawn_process("seriallog.jsos", include_str!("jsos/seriallog.jsos")).is_none() {
+        serial_println!("[main] failed to spawn seriallog.jsos");
+    }
     serial_println!("[main] spawn_process returned");
 
     os::shell::init();
