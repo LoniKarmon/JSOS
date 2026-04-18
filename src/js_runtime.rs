@@ -1381,17 +1381,27 @@ unsafe extern "C" fn js_os_ftp_command(
 
     let kind = match cmd_type.as_str() {
         "list" => FtpCommandKind::List(arg),
-        "get" => {
-            let mut parts = arg.splitn(2, '|');
-            let remote = parts.next().unwrap_or("").to_string();
-            let key    = parts.next().unwrap_or("").to_string();
-            FtpCommandKind::Get(remote, key)
-        }
-        "put" => {
-            let mut parts = arg.splitn(2, '|');
-            let remote = parts.next().unwrap_or("").to_string();
-            let key    = parts.next().unwrap_or("").to_string();
-            FtpCommandKind::Put(remote, key)
+        "get" | "put" => {
+            let Some((remote, key)) = arg.split_once('|') else {
+                crate::serial_println!(
+                    "[FTP] {} requires 'remote|key' format, got {:?}",
+                    cmd_type, arg
+                );
+                return js_undefined();
+            };
+            if remote.is_empty() || key.is_empty() {
+                crate::serial_println!(
+                    "[FTP] {} has empty remote or key: {:?}", cmd_type, arg
+                );
+                return js_undefined();
+            }
+            let remote = remote.to_string();
+            let key = key.to_string();
+            if cmd_type == "get" {
+                FtpCommandKind::Get(remote, key)
+            } else {
+                FtpCommandKind::Put(remote, key)
+            }
         }
         "mkdir"  => FtpCommandKind::Mkdir(arg),
         "delete" => FtpCommandKind::Delete(arg),
